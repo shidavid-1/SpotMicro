@@ -91,7 +91,7 @@ class Servo {
         // the corresponding theta value is actually 95 degrees
         // if you want theta to be 95, you send 85 to the shoulder.
         void move_to_angle(float angle) const;
+        void move_to_pwm(uint16_t pulse_width) const;
 };
-
 
 #endif // SERVO_CONTROL_HPP

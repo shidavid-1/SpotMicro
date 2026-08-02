@@ -33,9 +33,9 @@ class SpotModel {
         vec<float> orientation;
         vec<float> position;    // I actually don't think the x y coordinates matter.
     public:
-        void set_orientation();
+        void set_orientation(vec<float> orientation);
 
-        void set_positition();
+        void set_positition(vec<float> position);
 
         vec<float> get_orientation() const;
         
