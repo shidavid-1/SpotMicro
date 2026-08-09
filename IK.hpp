@@ -4,8 +4,10 @@
    from within the reference frame of the leg.
 */
 
+#ifndef IK_HPP
+#define IK_HPP
+
 #include "Common.hpp"
-#include "Spot_Model.hpp"
 #include <utility>
 
 
@@ -22,3 +24,5 @@
 
 // NEED TO STILL IMPLEMENT THE UNREACHABILE HANDLING STUFF & foot tip offset
 std::pair<triplet<float>, bool> position_to_angles(const vec<float> &pos, const LegType lType);
+
+#endif // IK_HPP

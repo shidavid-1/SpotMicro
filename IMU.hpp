@@ -16,8 +16,6 @@
 constexpr uint8_t PWR_MGMT_1 = 0x6B;
 constexpr uint8_t GYRO_CONFIG = 0x1B;
 constexpr uint8_t ACCEL_CONFIG = 0x1C;
-constexpr float binary_to_500dps = 1000.0f/65536.0f;
-constexpr float binary_to_4g = 8.0f/65536.0f;
 
 enum class AccelRange {plus_minus_2g, plus_minus_4g, plus_minus_8g, plus_minus_16g};
 enum class AngularRange {plus_minus_250dps, plus_minus_500dps, plus_minus_1000dps, plus_minus_2000dps};
@@ -35,11 +33,9 @@ class IMU {
               vec<float> accel;        // Most recent accel values
               vec<float> accel_zero;
 
-              vec<float> binary_to_float(vec<uint16_t> raw_values, bool isAngvel);
-
               // EFFECTS: Updates angvel and accel by converting
               // raw_angvel and raw_accel
-              vec<float> binary_to_float();
+              void binary_to_float();
 
               uint8_t angRange_to_bin() const;
 
@@ -49,7 +45,7 @@ class IMU {
 
               float accl_conversion() const;
 
-              void config_IMU(AngularRange angRange, AccelRange acclRange) const;
+              void config_IMU() const;
 
        public:
               IMU(AngularRange angRange, AccelRange acclrange);

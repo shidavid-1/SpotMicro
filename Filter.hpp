@@ -1,9 +1,9 @@
 ///// Implement Complementary Filter /////
 
-#include "Common.hpp"
+#ifndef FILTER_HPP
+#define FILTER_HPP
 
-#ifndef SERVO_HPP
-#define SERVO_HPP
+#include "Common.hpp"
 
 vec<float> calculate_orientation(const vec<float> angvel, const vec<float> accel);
 

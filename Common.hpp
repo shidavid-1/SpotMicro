@@ -4,10 +4,10 @@
    structures, constants, and functions
 */
 
-#include "driver/i2c.h"
-
 #ifndef UNIVERSAL_CONSTANTS_STRUCTS_HPP
 #define UNIVERSAL_CONSTANTS_STRUCTS_HPP
+
+#include "driver/i2c.h"
 
 // Constants //
 constexpr float control_frequency = 80; // Hz
@@ -16,6 +16,10 @@ constexpr gpio_num_t scl_pin = GPIO_NUM_12;
 constexpr i2c_port_t i2c_port = I2C_NUM_0;
 constexpr uint8_t IMU_ADDR = 0x68;
 constexpr uint8_t PCA_ADDR = 0x40;
+
+// Enums //
+
+enum class LegType {frontLeft, frontRight, backLeft, backRight};
 
 // Structures //
 template <typename T>
@@ -44,13 +48,17 @@ struct legQuad {
 
 // REQUIRES: i2c bus is properly wired
 // EFFECTS: Configures and prepares
-// i2c bus using global "i2c_controller"
+// i2c bus using global "i2c_port"
 void init_i2c();
 
 // REQUIRES: port is 1 or 0, addr, reg, and data are valid
 // EFFECTS: Constructs, executes, and deletes a list at ptr that
 // writes register reg of device with address addr to be data.
 // This executes at I2C controller port.
-esp_err_t write_to_reg(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t data);
+esp_err_t write_to_reg(uint8_t addr, uint8_t reg, uint8_t data);
+
+// Operator Overloads //
+
+vec<float> operator-(const vec<float> lhs, const vec<float> rhs);
 
 #endif
