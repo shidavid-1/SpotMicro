@@ -9,8 +9,7 @@
 const float alpha = 0.98;
 const float dt = 1.0f/control_frequency;
 
-vec<float> calculate_orientation(SpotModel * TPUP, const vec<float> angvel, const vec<float> accel);
-
-vec<float> calculate_acceleration(const vec<float> ori, const vec<float> accel);
+// Updates orientation in TPUP and returns acceleration as a vec<Float>
+vec<float> filter_IMU_data(SpotModel * TPUP, const vec<float> angvel, const vec<float> accel);
 
 #endif

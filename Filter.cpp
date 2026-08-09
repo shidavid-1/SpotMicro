@@ -7,9 +7,14 @@
 #include "IK.hpp"
 #include <cmath>
 
+vec<float> filter_IMU_data(SpotModel * TPUP, const vec<float> angvel, const vec<float> accel) {
+    TPUP->set_orientation(calculate_orientation(TPUP, angvel, accel));
+    return calculate_acceleration(TPUP->get_orientation(), accel);
+}
+
 // Pitch forward (i.e. nose down) gives negative theta_y
 // Roll left (i.e. left shoulder down) gives negative theta_x
-vec<float> calculate_orientation(const SpotModel * TPUP, const vec<float> angvel, const vec<float> accel) {
+static vec<float> calculate_orientation(const SpotModel * TPUP, const vec<float> angvel, const vec<float> accel) {
     vec<float> new_orientation;
     new_orientation.x = alpha * (angvel.x * dt + TPUP->get_orientation().x) + (1 - alpha) * ((float)atan2(accel.y, accel.z) / RAD_PER_DEG);
     new_orientation.y = alpha * (angvel.y * dt + TPUP->get_orientation().y) + (1 - alpha) * ((float)atan2(accel.x, accel.z) / RAD_PER_DEG);
@@ -17,7 +22,7 @@ vec<float> calculate_orientation(const SpotModel * TPUP, const vec<float> angvel
     return new_orientation;
 }
 
-vec<float> calculate_acceleration(const vec<float> ori, const vec<float> accel) {
+static vec<float> calculate_acceleration(const vec<float> ori, const vec<float> accel) {
     vec<float> accel_no_grav;
     accel_no_grav.x = accel.x - gravity * cos(ori.x * RAD_PER_DEG);
     accel_no_grav.y = accel.y - gravity * sin(ori.x * RAD_PER_DEG);
