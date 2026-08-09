@@ -17,6 +17,16 @@ constexpr i2c_port_t i2c_port = I2C_NUM_0;
 constexpr uint8_t IMU_ADDR = 0x68;
 constexpr uint8_t PCA_ADDR = 0x40;
 
+// Leg geometry, shared by the model and the IK solver
+constexpr float HIP_OFFSET      = 10.0f;          // mm
+constexpr float SHOULDER_LENGTH = 61.5f;          // mm
+constexpr float UPPERLEG_LENGTH = 110.88535746f;  // mm
+constexpr float FORELEG_LENGTH  = 118.25f;        // mm
+constexpr float FOOTTIP_RADIUS  = 40.0f;          // mm
+
+constexpr float RAD_PER_DEG = 0.01745329251994329577f;
+constexpr float gravity     = 9.81f; // m/s
+
 // Enums //
 
 enum class LegType {frontLeft, frontRight, backLeft, backRight};

@@ -28,7 +28,9 @@ class SpotModel {
         Leg frontRight;
         Leg backLeft;
         Leg backRight;
-        vec<float> orientation;
+        vec<float> orientation; // Tells me the pitch, roll, and yaw with respect to the initial orientation
+                                // the code works best when this initial orientation has the body transverse
+                                // plane perpendicular to gravity.
         vec<float> position;    // I actually don't think the x y coordinates matter.
         const legQuad<vec<float>> leg_origins =
         {
@@ -59,12 +61,10 @@ class Leg {
         triplet<float> angles;
 
     public:
-        constexpr static float HIP_OFFSET       = 10.0f; // mm  
-        constexpr static float SHOULDER_LENGTH  = 61.5f; // mm
-        constexpr static float UPPERLEG_LENGTH  = 110.88535746f; // mm
-        constexpr static float FORELEG_LENGTH   = 118.25f; // mm
-        constexpr static float FOOTTIP_RADIUS   = 40.0f; //mm
-        
+        // NOTE: leg geometry (HIP_OFFSET, SHOULDER_LENGTH, UPPERLEG_LENGTH,
+        // FORELEG_LENGTH, FOOTTIP_RADIUS) now lives in Common.hpp so the IK
+        // solver can use it without depending on the model/servo stack.
+
         Leg(LegType lType, Servo hip, Servo shoulder, Servo knee);
 
         triplet<float> get_angles() const;
