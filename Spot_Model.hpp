@@ -55,9 +55,9 @@ class SpotModel {
 class Leg {
     private:
         LegType type;
-        Servo hip;
-        Servo shoulder;
-        Servo knee;
+        SpotServo hip;
+        SpotServo shoulder;
+        SpotServo knee;
         triplet<float> angles;
 
     public:
@@ -65,7 +65,7 @@ class Leg {
         // FORELEG_LENGTH, FOOTTIP_RADIUS) now lives in Common.hpp so the IK
         // solver can use it without depending on the model/servo stack.
 
-        Leg(LegType lType, Servo hip, Servo shoulder, Servo knee);
+        Leg(LegType lType, SpotServo hip, SpotServo shoulder, SpotServo knee);
 
         triplet<float> get_angles() const;
 

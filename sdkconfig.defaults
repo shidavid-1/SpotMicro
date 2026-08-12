@@ -1,0 +1,11 @@
+# Test session needs a roomier main task stack than the 3584 B default:
+# the walkthrough keeps line buffers and servo objects on the stack.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# 1 ms tick so the input polling in Test_Session feels responsive and the
+# IMU streaming intervals are accurate.
+CONFIG_FREERTOS_HZ=1000
+
+# The session blocks on human input for minutes at a time. Without this the
+# task watchdog trips while you are lining up a protractor.
+CONFIG_ESP_TASK_WDT_INIT=n

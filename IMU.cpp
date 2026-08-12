@@ -16,7 +16,39 @@ IMU::IMU(AngularRange angRange, AccelRange acclRange)
       angvel({}), angvel_zero({}),
       accel({}), accel_zero({}) {
 
-    config_IMU();
+    // Check that the IMU is plugged in and at its proper address
+    // configure the register pointer to point to WHO_AM_I
+    uint8_t IM_IMU = 0;
+    i2c_cmd_handle_t ptr = i2c_cmd_link_create();
+    i2c_master_start(ptr);
+    i2c_master_write_byte(ptr, IMU_ADDR << 1, true);
+    i2c_master_write_byte(ptr, WHO_AM_I, true);
+    i2c_master_stop(ptr);
+    if (i2c_master_cmd_begin(i2c_port, ptr, pdMS_TO_TICKS(50)) != ESP_OK) {
+        ESP_LOGE("IMU ERROR", "Failed to read from IMU, check that IMU is plugged in.");
+        abort();
+    }
+    i2c_cmd_link_delete(ptr);
+
+    // read from the IMU
+    ptr = i2c_cmd_link_create();
+    i2c_master_start(ptr);
+    i2c_master_write_byte(ptr, (IMU_ADDR << 1) + 1, true);
+    i2c_master_read_byte(ptr, &IM_IMU, I2C_MASTER_NACK);
+    i2c_master_stop(ptr);
+    if (i2c_master_cmd_begin(i2c_port, ptr, pdMS_TO_TICKS(50)) != ESP_OK) {
+        ESP_LOGE("IMU ERROR", "Failed to read from IMU, check that IMU is plugged in.");
+        abort();
+    }
+    i2c_cmd_link_delete(ptr);
+    
+    if (IM_IMU == WHO_AM_I_IMU_VALUE) {
+        config_IMU();
+    }
+    else {
+        ESP_LOGE("ERROR", "Address in WHO_AM_I register incorrect, check that correct device is plugged in.");
+        abort();
+    }
 }
 
 // When called, updates the IMU readings, then stores the readings
@@ -24,7 +56,9 @@ IMU::IMU(AngularRange angRange, AccelRange acclRange)
 void IMU::calibrate() {
     update();
     angvel_zero = angvel;
-    accel_zero = accel;
+    accel_zero.x = accel.x;
+    accel_zero.y = accel.y;
+    accel_zero.z = accel.z - gravity;
 }
 
 void IMU::update() {
@@ -37,7 +71,7 @@ void IMU::update() {
     i2c_master_write_byte(ptr, IMU_ADDR << 1, true);
     i2c_master_write_byte(ptr, 0x3B, true);
     i2c_master_stop(ptr);
-    i2c_master_cmd_begin(I2C_NUM_0, ptr, pdMS_TO_TICKS(50));
+    i2c_master_cmd_begin(i2c_port, ptr, pdMS_TO_TICKS(50));
     i2c_cmd_link_delete(ptr);
 
     // read from the IMU
@@ -51,16 +85,16 @@ void IMU::update() {
     }
     i2c_master_read_byte(ptr, data + 13, I2C_MASTER_NACK);
     i2c_master_stop(ptr);
-    i2c_master_cmd_begin(I2C_NUM_0, ptr, pdMS_TO_TICKS(50));
+    i2c_master_cmd_begin(i2c_port, ptr, pdMS_TO_TICKS(50));
     i2c_cmd_link_delete(ptr);
 
     // Parse the data from the IMU
-    raw_accel.x   = ((uint16_t)data[0] << 8U) + (uint16_t)data[1];
-    raw_accel.y   = ((uint16_t)data[2] << 8U) + (uint16_t)data[3];
-    raw_accel.z   = ((uint16_t)data[4] << 8U) + (uint16_t)data[5];
-    raw_angvel.x  = ((uint16_t)data[8] << 8U) + (uint16_t)data[9];
-    raw_angvel.y  = ((uint16_t)data[10] << 8U) + (uint16_t)data[11];
-    raw_angvel.z  = ((uint16_t)data[12] << 8U) + (uint16_t)data[13];
+    raw_accel.x   = ((uint16_t)data[0] << 8U) | (uint16_t)data[1];
+    raw_accel.y   = ((uint16_t)data[2] << 8U) | (uint16_t)data[3];
+    raw_accel.z   = ((uint16_t)data[4] << 8U) | (uint16_t)data[5];
+    raw_angvel.x  = ((uint16_t)data[8] << 8U) | (uint16_t)data[9];
+    raw_angvel.y  = ((uint16_t)data[10] << 8U) | (uint16_t)data[11];
+    raw_angvel.z  = ((uint16_t)data[12] << 8U) | (uint16_t)data[13];
 
     // Decipher the data
     binary_to_float();
@@ -117,19 +151,19 @@ float IMU::ang_conversion() const {
 
 float IMU::accl_conversion() const {
     switch(acclRange) {
-        case AccelRange::plus_minus_2g:  return 4.0f/65536.0f;
-        case AccelRange::plus_minus_4g:  return 8.0f/65536.0f;
-        case AccelRange::plus_minus_8g:  return 16.0f/65536.0f;
-        case AccelRange::plus_minus_16g: return 32.0f/65536.0f;
+        case AccelRange::plus_minus_2g:  return gravity * 4.0f/65536.0f;
+        case AccelRange::plus_minus_4g:  return gravity * 8.0f/65536.0f;
+        case AccelRange::plus_minus_8g:  return gravity * 16.0f/65536.0f;
+        case AccelRange::plus_minus_16g: return gravity * 32.0f/65536.0f;
         __builtin_unreachable();
     }
 }
 
 void IMU::config_IMU() const {
     // clear the sleep bit to turn on the device
-    write_to_reg(I2C_NUM_0, IMU_ADDR, PWR_MGMT_1, 0x00);
+    write_to_reg(IMU_ADDR, PWR_MGMT_1, 0x00);
     // configure the gyroscope to +/- 500 dps
-    write_to_reg(I2C_NUM_0, IMU_ADDR, GYRO_CONFIG, angRange_to_bin());
+    write_to_reg(IMU_ADDR, GYRO_CONFIG, angRange_to_bin());
     // configure the accelerometer +/- 4g
-    write_to_reg(I2C_NUM_0, IMU_ADDR, ACCEL_CONFIG, accelRange_to_bin());
+    write_to_reg(IMU_ADDR, ACCEL_CONFIG, accelRange_to_bin());
 }

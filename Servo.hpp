@@ -25,16 +25,16 @@ constexpr double period = 1.0 / true_pwm_freq * 1000000;
 // "Free" means no boundary protection (full 0-180 travel).
 enum class ServoType { hip, shoulder, knee, free };
 
-// Enum representing the 4 different leg positions
-enum class LegType { frontLeft, frontRight, backLeft, backRight };
-
 // Inclusive [min, max] angle range (degrees) a servo of a given type may move to.
 struct AngleLimit { float min; float max; };
 
 // Calibration coefficients for one servo's best-fit line (from the calibration
 // sheet). move_to_angle applies: angle_sent = (angle - offset) / slope.
-// Also contains the type of servo.
-struct Calibration { float slope; float offset; ServoType type; };
+struct Calibration { float slope; float offset; };
+
+// Center position and joint type for one on-robot servo. Both are meaningful
+// only for a servo mounted on the Spot, so they live apart from Calibration.
+struct SpotCalibration { int center_count; ServoType type; };
 
 
 // EFFECTS: Returns the allowable angle range for the given servo type.
@@ -43,7 +43,11 @@ AngleLimit limit_for(ServoType t);
 // EFFECTS: Returns a human-readable name for the given servo type (for logging).
 const char* type_name(ServoType t);
 
-static void init_pca9685();
+// EFFECTS: Puts the PCA9685 in sleep, writes the prescaler for
+// desired_pwm_freq, then wakes it. MUST be called once after init_i2c() and
+// before any servo is commanded, or the chip stays at its ~200 Hz power-on
+// default and every pulse width is wrong.
+void init_pca9685();
 
 // REQUIRES: num is 0-12.
 // EFFECTS: Returns the calibration for servo number `num`. num 1-12 are the
@@ -51,15 +55,23 @@ static void init_pca9685();
 // (identity: slope 1, offset 0). Aborts the program if num is out of range.
 Calibration calibration_for(int num);
 
+// REQUIRES: num is 0-12.
+// EFFECTS: Returns the center count and joint type for servo number `num`.
+// num 1-12 are the physical servos (per the sticker); num 0 is the reserved
+// uncalibrated servo, which has no meaningful center (0) and is type free.
+// Aborts the program if num is out of range.
+SpotCalibration spot_calibration_for(int num);
+
 class Servo {
     private:
         const int           servo_num;  // servo name/number
-        const ServoType     type;       // Hip, Knee, Shoulder, or Free
         const int           led_pos;    // int from 0 - 15
         const float         slope;      // slope of best fit line from calibration sheet
         const float         offset;     // y intercept of best fit line from calibration sheet;
                                         // the sign must match the sign of the y intercept
                                         // in the equation for the best fit line from the sheet
+        
+        /*
         uint32_t            curr_pulse_width; // stores the value describing the most recent pulse
                                               // width sent to the servo in microseconds
         float               des_angle;        // stores the last angle that we wanted to move to
@@ -67,6 +79,7 @@ class Servo {
         // NOTE: Both angular members store the physical angles that we wish to be at and
         // believe to actually be at. That is, they are NOT necessarily the angles the servos
         // were commanded to, rather, the angle that we believe an imaginary needle on a servo points to.
+        */
 
     public:
         // REQUIRES: num is 0-12, port is a valid I2C port.
@@ -77,14 +90,15 @@ class Servo {
         Servo(int num);
 
         // REQUIRES: num is 0-12, port is a valid I2C port, 0 <= led_pos <= 15.
-        // EFFECTS: Constructs a servo with an explicitly chosen type and LED
-        // position, for wiring that does not follow the num - 1 convention.
+        // EFFECTS: Constructs a servo with an explicitly chosen LED position,
+        // for wiring that does not follow the num - 1 convention.
         // Calibration coefficients are still looked up from num.
         // Aborts the program on invalid arguments.
-        Servo(int num, ServoType type, int led_pos);
+        Servo(int num, int led_pos);
 
-        // EFFECTS: Returns the joint type this servo drives.
-        ServoType get_type() const;
+        int get_servo_num() const;
+
+        float get_slope() const;
 
         // REQUIRES: port is 1 or 0, addr, and reg are valid
         // 0 <= angle <= 180, 0 <= led_pos <= 15
@@ -96,9 +110,29 @@ class Servo {
         // So if you send 85 degrees to the shoulder servo
         // the corresponding theta value is actually 95 degrees
         // if you want theta to be 95, you send 85 to the shoulder.
-        void move_to_angle(float angle);
+        virtual void move_to_angle(float angle);
         
-        void move_to_pwm(float width);
+        void move_to_pwm(int numCounts);
+};
+
+class SpotServo : public Servo {
+    private:
+        const int center_count;
+        const ServoType type;       // Hip, Knee, Shoulder, or Free
+    
+    public:
+        // REQUIRES: num is 0-12, port is a valid I2C port.
+        // EFFECTS: Constructs an on-robot servo. Calibration coefficients come
+        // from the base Servo constructor; the center count and joint type are
+        // looked up from num. Aborts the program on invalid arguments.
+        SpotServo(int num);
+
+        // EFFECTS: Returns the joint type this servo drives.
+        ServoType get_type() const;
+
+        int get_center_count() const;
+
+        void move_to_angle(float angle) override;
 };
 
 #endif // SERVO_CONTROL_HPP

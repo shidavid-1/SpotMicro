@@ -25,7 +25,7 @@ constexpr float FORELEG_LENGTH  = 118.25f;        // mm
 constexpr float FOOTTIP_RADIUS  = 40.0f;          // mm
 
 constexpr float RAD_PER_DEG = 0.01745329251994329577f;
-constexpr float gravity     = 9.81f; // m/s
+constexpr float gravity     = 9.81f; // m/s^2
 
 // Enums //
 
