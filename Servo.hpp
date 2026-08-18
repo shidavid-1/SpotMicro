@@ -132,6 +132,12 @@ class SpotServo : public Servo {
 
         int get_center_count() const;
 
+        // EFFECTS: Moves the particular spot servo
+        // such that the relevant joint angle
+        // in the frame of reference of the spot is angle
+        // so if I command the front right hip to 45 degrees,
+        // it will cause the leg to kick out away from the body
+        // at 45 degrees rather than inward toward the body.
         void move_to_angle(float angle) override;
 };
 

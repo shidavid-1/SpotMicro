@@ -5,6 +5,9 @@
 #include "Servo.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_app_desc.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -19,7 +22,18 @@ constexpr AccelRange   DEFAULT_ACC_RANGE = AccelRange::plus_minus_4g;
 
 // Acceptance criteria, taken from the test plan.
 constexpr float SERVO_ANGLE_TOL = 1.0f;   // deg, Servo::move_to_angle
-constexpr float SPOT_LIMIT_TOL  = 5.0f;   // deg, SpotServo saturation
+// No angular tolerance for the SpotServo limit test: the criterion is now
+// physical (no contact at a bound, no motion past one), not "within N degrees
+// of the bound".
+
+// How far past a bound the limit test commands. Only needs to be enough that
+// the clamp is unambiguous -- the clamp runs before the count math, so a
+// bigger overshoot produces the exact same final count, just an alarming
+// number on screen.
+constexpr float LIMIT_OVERSHOOT = 10.0f;  // deg
+
+// SERVO_MIN_PULSE_US / SERVO_MAX_PULSE_US come from Self_Test.hpp, so the
+// self test and the interactive tests judge reachability by the same rule.
 constexpr float FACE_FRACTION   = 0.90f;  // update(): 90% of |a| on one axis
 
 // Not from the plan: post-calibration rest thresholds, so calibrate() has a
@@ -43,13 +57,26 @@ static void console_init() {
     setvbuf(stdout, NULL, _IONBF, 0);
 }
 
+// EFFECTS: Discards anything already sitting in the input buffer.
+// Terminals send Enter as CRLF: read_line stops on the '\r' and leaves the
+// '\n' behind, which would otherwise satisfy the NEXT prompt instantly and
+// make the six-face test skip straight through its faces.
+static void drain_input() {
+    while (fgetc(stdin) != EOF) { }
+    clearerr(stdin);
+}
+
 // EFFECTS: Blocks until the user types a line, echoing as they go. Yields to
 // the scheduler between polls so the idle task still runs.
 static void read_line(char *buf, size_t n) {
     size_t i = 0;
+    drain_input();
     for (;;) {
         int c = fgetc(stdin);
         if (c == EOF) {
+            // Clear the EOF indicator, or stdio latches it and every later
+            // read returns EOF without ever touching the UART again.
+            clearerr(stdin);
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -122,6 +149,8 @@ static TestRecord records[] = {
 };
 constexpr int NUM_TESTS = sizeof(records) / sizeof(records[0]);
 
+static void save_results();   // defined below, in the persistence section
+
 // EFFECTS: Asks the operator to judge the test just performed and stores the
 // verdict. The operator is the instrument for most of these, so the verdict
 // has to come from them.
@@ -136,6 +165,7 @@ static void ask_result(int index) {
     }
     printf("    Note (optional, blank to skip): ");
     read_line(records[index].note, sizeof records[index].note);
+    save_results();
 }
 
 static const char *result_str(Result r) {
@@ -146,6 +176,113 @@ static const char *result_str(Result r) {
         case Result::not_run: return "----";
     }
     return "????";
+}
+
+
+//////////////////// PERSISTENCE ////////////////////
+
+// Results survive reboots so a session can be run across several sittings.
+// Stored in NVS as one blob; only the verdict and note are saved, since the
+// names are compile-time constants.
+
+static const char *NVS_NAMESPACE = "tpup_test";
+static const char *NVS_KEY       = "results";
+
+// Bump when the layout of PersistedRecord or the test list changes, so stale
+// blobs from an older firmware are discarded rather than misread.
+constexpr uint8_t PERSIST_VERSION = 1;
+
+struct PersistedBlob {
+    uint8_t version;
+    uint8_t count;
+    struct {
+        uint8_t result;
+        char    note[64];
+    } entries[NUM_TESTS];
+};
+
+// EFFECTS: Brings up NVS, formatting it if the partition is new or was left
+// in a bad state. Safe to call repeatedly.
+static void nvs_ready() {
+    static bool done = false;
+    if (done) return;
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    if (err != ESP_OK) {
+        printf("  ! NVS unavailable (%s); results will not persist.\n", esp_err_to_name(err));
+    }
+    done = true;
+}
+
+// EFFECTS: Writes the current verdicts to NVS.
+static void save_results() {
+    nvs_ready();
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+
+    PersistedBlob blob = {};
+    blob.version = PERSIST_VERSION;
+    blob.count   = NUM_TESTS;
+    for (int i = 0; i < NUM_TESTS; ++i) {
+        blob.entries[i].result = (uint8_t)records[i].result;
+        strncpy(blob.entries[i].note, records[i].note, sizeof blob.entries[i].note - 1);
+    }
+
+    nvs_set_blob(h, NVS_KEY, &blob, sizeof blob);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// EFFECTS: Restores verdicts saved by a previous session, if the stored blob
+// matches this firmware's layout. Returns true if anything was restored.
+static bool load_results() {
+    nvs_ready();
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
+
+    PersistedBlob blob = {};
+    size_t len = sizeof blob;
+    const esp_err_t err = nvs_get_blob(h, NVS_KEY, &blob, &len);
+    nvs_close(h);
+
+    if (err != ESP_OK || len != sizeof blob) return false;
+    if (blob.version != PERSIST_VERSION || blob.count != NUM_TESTS) {
+        printf("  (stored results are from a different firmware layout; ignored)\n");
+        return false;
+    }
+
+    int restored = 0;
+    for (int i = 0; i < NUM_TESTS; ++i) {
+        records[i].result = (Result)blob.entries[i].result;
+        strncpy(records[i].note, blob.entries[i].note, sizeof records[i].note - 1);
+        records[i].note[sizeof records[i].note - 1] = '\0';
+        if (records[i].result != Result::not_run) ++restored;
+    }
+    if (restored > 0) {
+        printf("  Restored %d recorded result(s) from a previous session.\n", restored);
+    }
+    return restored > 0;
+}
+
+// EFFECTS: Resets one test to not-run and persists the change.
+static void clear_one(int index) {
+    records[index].result = Result::not_run;
+    records[index].note[0] = '\0';
+    save_results();
+    printf("  Cleared \"%s\".\n", records[index].name);
+}
+
+// EFFECTS: Resets every test to not-run and persists the change.
+static void clear_all() {
+    for (int i = 0; i < NUM_TESTS; ++i) {
+        records[i].result = Result::not_run;
+        records[i].note[0] = '\0';
+    }
+    save_results();
+    printf("  All results cleared.\n");
 }
 
 
@@ -197,6 +334,46 @@ static esp_err_t read_reg(uint8_t addr, uint8_t reg, uint8_t *out) {
 // happens.
 static bool imu_dirtied = false;
 
+// EFFECTS: Probes every 7-bit address and reports which devices ACK. This is
+// the first thing to run when a device "should" be connected but isn't
+// behaving: it separates "nothing on the bus" from "wrong address" from "the
+// device is there and the bug is in our code".
+static void i2c_scan() {
+    printf("\n--- I2C bus scan (SDA=%d, SCL=%d) ---\n", (int)sda_pin, (int)scl_pin);
+    printf("Expected: 0x%02X (MPU6050 IMU), 0x%02X (PCA9685 servo driver)\n\n",
+           IMU_ADDR, PCA_ADDR);
+
+    int found = 0;
+    printf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
+    for (int hi = 0; hi < 8; ++hi) {
+        printf("%02x: ", hi * 16);
+        for (int lo = 0; lo < 16; ++lo) {
+            const int addr = hi * 16 + lo;
+            if (addr < 0x08 || addr > 0x77) { printf("   "); continue; }
+
+            i2c_cmd_handle_t ptr = i2c_cmd_link_create();
+            i2c_master_start(ptr);
+            i2c_master_write_byte(ptr, (addr << 1) | 0, true);
+            i2c_master_stop(ptr);
+            const esp_err_t err = i2c_master_cmd_begin(i2c_port, ptr, pdMS_TO_TICKS(20));
+            i2c_cmd_link_delete(ptr);
+
+            if (err == ESP_OK) { printf("%02x ", addr); ++found; }
+            else               { printf("-- "); }
+        }
+        printf("\n");
+    }
+
+    printf("\n  %d device(s) responded.\n", found);
+    if (found == 0) {
+        printf("  Nothing at all: check power, ground, SDA/SCL wiring, and that\n"
+               "  both lines have pull-ups. A bus with no pull-ups reads as\n"
+               "  silence exactly like an absent device.\n");
+    }
+    printf("  IMU  @ 0x%02X: %s\n", IMU_ADDR, "expected for MPU6050 with AD0 low");
+    printf("  PCA  @ 0x%02X: %s\n", PCA_ADDR, "expected for PCA9685 with all address jumpers open");
+}
+
 // EFFECTS: Averages `samples` IMU readings taken `interval_ms` apart.
 static void average_reading(IMU &imu, int samples, int interval_ms,
                             vec<float> *accel_out, vec<float> *angvel_out) {
@@ -230,6 +407,7 @@ static void test_self_tests() {
     const bool ok = run_self_tests(imu_instance());
     records[0].result = ok ? Result::pass : Result::fail;
     snprintf(records[0].note, sizeof records[0].note, "automatic");
+    save_results();
     printf("\n    Recorded automatically: %s\n", result_str(records[0].result));
 }
 
@@ -488,7 +666,21 @@ static void test_servo_move_to_angle() {
 
     const int num = ask_int("Servo number (0 = uncalibrated identity)", 0, 12);
     ensure_pca_ready();
-    Servo servo(num);
+
+    // Servo 0's led_pos would be num - 1 = -1, and move_to_pwm computes
+    // LED_ON_L = 6 + 4 * led_pos = 2 -- which is SUBADR1, not a PWM channel.
+    // Commanding it would scribble over the PCA9685's addressing registers
+    // instead of moving anything, so ask which channel it is actually wired
+    // to and use the explicit-led_pos constructor.
+    int led_pos = num - 1;
+    if (num == 0) {
+        printf("\n    Servo 0 has no implied channel (led_pos would be -1, which\n"
+               "    maps onto the PCA9685 config registers rather than a PWM\n"
+               "    output). Specify the channel it is plugged into.\n");
+        led_pos = ask_int("PCA9685 channel", 0, 15);
+    }
+    Servo servo(num, led_pos);
+    printf("    Using PCA9685 channel %d\n", led_pos);
 
     const Calibration cal = calibration_for(num);
     printf("    Servo %d: slope %.3f, offset %+.2f\n",
@@ -543,18 +735,221 @@ static void test_move_to_pwm_skipped() {
 
     records[6].result = Result::skip;
     snprintf(records[6].note, sizeof records[6].note, "implied by move_to_angle");
+    save_results();
     printf("\n    Recorded as SKIP.\n");
 }
 
 
-// T7: SpotServo validation #1 -- command past the limit, confirm saturation
-// within +/- 5 degrees of the bound.
+// SpotAngleMath plus the two reachability flags this session needs. The
+// arithmetic itself lives in Self_Test.cpp so there is exactly one test-side
+// copy of the formula rather than one per file.
+struct SpotMath : SpotAngleMath {
+    bool count_out_of_range;   // outside the 12-bit counter
+    bool pulse_unusable;       // in range, but not a pulse a servo obeys
+};
+
+// EFFECTS: Runs the shared angle-to-count math for `requested` and classifies
+// whether the result is something the hardware can act on.
+static SpotMath compute_spot_math(const SpotServo &joint, float requested) {
+    SpotMath m = {};
+    static_cast<SpotAngleMath &>(m) = spot_angle_math(joint.get_servo_num(), requested);
+
+    m.count_out_of_range = (m.final_count < 0) || (m.final_count > 4095);
+    m.pulse_unusable     = !m.count_out_of_range
+                        && (m.final_width < SERVO_MIN_PULSE_US
+                            || m.final_width > SERVO_MAX_PULSE_US);
+    return m;
+}
+
+
+// EFFECTS: Prints every intermediate value for `requested`, without
+// commanding anything.
+static void print_spot_servo_math(const SpotServo &joint, float requested) {
+    const int        num    = joint.get_servo_num();
+    const float      slope  = joint.get_slope();
+    const int        center = joint.get_center_count();
+    const AngleLimit lim    = limit_for(joint.get_type());
+    const SpotMath   m      = compute_spot_math(joint, requested);
+
+    const float angle       = m.effective;
+    const bool  clamped     = m.clamped;
+    const char *branch      = m.branch;
+    const char *formula     = m.formula;
+    const float diff_angle  = m.diff_angle;
+    const float diff_width  = m.diff_width;
+    const int   diff_count  = m.diff_count;
+    const int   final_count = m.final_count;
+    const float final_width = m.final_width;
+
+    printf("\n      +-- servo math -------------------------------------------\n");
+    printf("      | servo_num          = %d (%s, %s)\n", num, type_name(joint.get_type()), branch);
+    printf("      | requested angle    = %+8.2f deg\n", (double)requested);
+    printf("      | limits             = [%.1f, %.1f]\n", (double)lim.min, (double)lim.max);
+    printf("      | effective angle    = %+8.2f deg   %s\n", (double)angle,
+           clamped ? "<-- CLAMPED" : "(within limits)");
+    printf("      |\n");
+    printf("      | get_slope()        = %8.4f\n", (double)slope);
+    printf("      | 1/slope            = %8.4f\n", (double)(1.0f / slope));
+    printf("      | %s\n", formula);
+    printf("      | diff_angle         = %+8.3f deg\n", (double)diff_angle);
+    printf("      |\n");
+    printf("      | usec per degree    = %8.4f  (1000/90)\n", (double)(1000.0f / 90.0f));
+    printf("      | diff_width         = %+8.2f us\n", (double)diff_width);
+    printf("      |\n");
+    printf("      | period             = %8.2f us  (%.2f Hz, prescale %u)\n",
+           (double)period, (double)true_pwm_freq, (unsigned)pre_scale);
+    printf("      | counts per period  = 4096\n");
+    printf("      | us per count       = %8.4f us\n", (double)(period / 4096.0));
+    printf("      | diff_count         = %+8d counts  (round(diff_width / period * 4096))\n", diff_count);
+    printf("      |\n");
+    printf("      | center_count       = %8d counts  (%.1f us)\n",
+           center, (double)((float)center / 4096.0f * (float)period));
+    printf("      | FINAL count        = %8d counts  (center + diff)\n", final_count);
+    printf("      | FINAL pulse width  = %8.1f us\n", (double)final_width);
+
+    if (m.count_out_of_range) {
+        printf("      | !! OUT OF COUNT RANGE. move_to_pwm logs an error and then\n");
+        printf("      |    writes 0 to both count registers, so the servo is\n");
+        printf("      |    commanded to count 0 (~0 us), not left where it was.\n");
+    }
+    else if (m.pulse_unusable) {
+        printf("      | !! PULSE OUTSIDE SERVO RANGE (%.0f-%.0f us).\n",
+               (double)SERVO_MIN_PULSE_US, (double)SERVO_MAX_PULSE_US);
+        printf("      |    The count is a legal 12-bit value, so move_to_pwm\n");
+        printf("      |    writes it happily -- but the servo will ignore it or\n");
+        printf("      |    jam against its internal stop. THIS IS THE USUAL\n");
+        printf("      |    REASON A JOINT DOES NOT MOVE ON COMMAND.\n");
+    }
+    printf("      +----------------------------------------------------------\n");
+}
+
+
+//////////////////// PRE-TEST POSING ////////////////////
+
+// Driving one joint to its limit is only safe if the rest of the robot is out
+// of the way. Each joint type needs a different arrangement of the others.
+//
+// Servo numbering runs in per-leg triples -- (1,2,3) (4,5,6) (7,8,9)
+// (10,11,12), each being hip, shoulder, knee -- so the knee belonging to the
+// leg under test is always (shoulder number + 1).
+
+struct PoseTarget {
+    bool  command;      // false: leave this joint where it is
+    bool  use_center;   // true: command center_count directly, ignoring angle
+    float angle;
+};
+
+// EFFECTS: Returns where `servo` should be placed while `under_test` is being
+// swept to its limits.
+static PoseTarget pose_target_for(int servo, ServoType servo_type,
+                                  int under_test, ServoType test_type) {
+    if (servo == under_test) return { false, false, 0.0f };
+
+    const int leg_under_test = (under_test - 1) / 3;
+    const int leg_of_servo   = (servo - 1) / 3;
+
+    switch (test_type) {
+        case ServoType::shoulder:
+            // Hips centered, other shoulders at 90, other knees folded to
+            // 180, and this leg's own knee parked at its center count.
+            if (servo_type == ServoType::hip)      return { true, false,   0.0f };
+            if (servo_type == ServoType::shoulder) return { true, false,  90.0f };
+            if (leg_of_servo == leg_under_test)    return { true, true,    0.0f };
+            return { true, false, 180.0f };
+
+        case ServoType::knee:
+            // Hips centered, all shoulders at 90. Other knees are left alone.
+            if (servo_type == ServoType::hip)      return { true, false,  0.0f };
+            if (servo_type == ServoType::shoulder) return { true, false, 90.0f };
+            return { false, false, 0.0f };
+
+        case ServoType::hip:
+            // Other hips centered, shoulders at 0, knees tucked to 20.
+            if (servo_type == ServoType::hip)      return { true, false,  0.0f };
+            if (servo_type == ServoType::shoulder) return { true, false,  0.0f };
+            return { true, false, 20.0f };
+
+        case ServoType::free:
+            return { false, false, 0.0f };
+    }
+    return { false, false, 0.0f };
+}
+
+// EFFECTS: Describes and then commands the pre-test pose for the joint under
+// test. Every other joint moves, so this pauses for confirmation first.
+static void prepare_safe_pose(int under_test, ServoType test_type) {
+    printf("\n  -- Pre-test pose (servo %d, %s under test) --\n",
+           under_test, type_name(test_type));
+
+    switch (test_type) {
+        case ServoType::shoulder:
+            printf("     hips -> 0 deg, other shoulders -> 90 deg,\n"
+                   "     other knees -> 180 deg, this leg's knee -> center count\n");
+            break;
+        case ServoType::knee:
+            printf("     hips -> 0 deg, all shoulders -> 90 deg\n"
+                   "     (other knees left where they are)\n");
+            break;
+        case ServoType::hip:
+            printf("     other hips -> 0 deg, all shoulders -> 0 deg,\n"
+                   "     all knees -> 20 deg\n");
+            break;
+        case ServoType::free:
+            printf("     no pose defined for a free servo; nothing will move\n");
+            return;
+    }
+
+    printf("\n     ELEVEN joints are about to move. Keep hands clear and make\n"
+           "     sure the legs have room to swing.\n");
+    wait_for_enter("Clear of the robot");
+
+    for (int n = 1; n <= 12; ++n) {
+        SpotServo s(n);
+        const PoseTarget t = pose_target_for(n, s.get_type(), under_test, test_type);
+
+        if (!t.command) {
+            printf("      servo %2d (%-8s): %s\n", n, type_name(s.get_type()),
+                   n == under_test ? "UNDER TEST, not posed" : "left as-is");
+            continue;
+        }
+
+        if (t.use_center) {
+            // Commanded by count rather than angle: the angle-to-count math
+            // is the thing under test, so the parked position should not
+            // depend on it.
+            s.move_to_pwm(s.get_center_count());
+            printf("      servo %2d (%-8s): center count %d\n",
+                   n, type_name(s.get_type()), s.get_center_count());
+        }
+        else {
+            s.move_to_angle(t.angle);
+            printf("      servo %2d (%-8s): %+.0f deg\n",
+                   n, type_name(s.get_type()), (double)t.angle);
+        }
+        // Stagger so eleven servos do not all draw stall current at once.
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
+
+    printf("     Pose set.\n");
+    vTaskDelay(pdMS_TO_TICKS(400));
+}
+
+
+// T7: SpotServo validation #1 -- two separate claims per bound. First, that
+// the bound itself is a SAFE pose: nothing in one part of the body touching
+// anything in another, no pinched wires. Second, that commanding past the
+// bound produces no further motion.
 static void test_spotservo_limits() {
     printf("\n--- SpotServo #1: limit saturation ---\n");
-    printf("Desired behavior: commanding past a joint's limit saturates at\n"
-           "that limit rather than driving into the mechanical stop.\n");
-    printf("Acceptance: the joint stops within +/- %.0f degrees of its bound.\n",
-           (double)SPOT_LIMIT_TOL);
+    printf("Desired behavior: each joint's declared bound is a safe place to\n"
+           "be, and commanding past it moves the joint no further.\n");
+    printf("\nAcceptance, both parts must hold at EVERY bound:\n");
+    printf("  1. AT the bound: no component in one part of the body is in\n"
+           "     contact with a component in another part. PINCHED WIRES\n"
+           "     COUNT AS A FAILURE.\n");
+    printf("  2. BEYOND the bound: the servo does not move at all.\n");
+    printf("\nA bound that causes contact is a bound that is set wrong, even if\n"
+           "the clamp itself works perfectly. Both halves are being tested.\n");
     printf("\nSAFETY: body on a stand, legs clear, bench supply current-limited.\n"
            "If the clamp is broken this is exactly what stalls a servo -- keep\n"
            "a hand on the power switch and listen for buzzing.\n");
@@ -575,32 +970,89 @@ static void test_spotservo_limits() {
                num, type_name(joint.get_type()),
                (double)lim.min, (double)lim.max, joint.get_center_count());
 
-        wait_for_enter("Ready: commanding the MINIMUM limit");
-        joint.move_to_angle(lim.min);
-        printf("      commanded %.0f (the bound). Mark this position.\n", (double)lim.min);
-        vTaskDelay(pdMS_TO_TICKS(800));
+        prepare_safe_pose(num, joint.get_type());
 
-        wait_for_enter("Commanding 30 degrees BELOW the limit -- it must not move");
-        joint.move_to_angle(lim.min - 30.0f);
-        printf("      commanded %.0f, should saturate at %.0f (+/- %.0f)\n",
-               (double)(lim.min - 30.0f), (double)lim.min, (double)SPOT_LIMIT_TOL);
-        vTaskDelay(pdMS_TO_TICKS(800));
+        // Four commands per joint, alternating: a bound, then past that same
+        // bound. The pair either side of a bound should produce IDENTICAL
+        // final counts -- that is the clamp working, and it is visible in the
+        // math dump before the servo even moves.
+        const float commands[] = {
+            lim.min,
+            lim.min - LIMIT_OVERSHOOT,
+            lim.max,
+            lim.max + LIMIT_OVERSHOOT,
+        };
+        char under[64], over[64];
+        snprintf(under, sizeof under, "%.0f degrees BEYOND the minimum bound",
+                 (double)LIMIT_OVERSHOOT);
+        snprintf(over,  sizeof over,  "%.0f degrees BEYOND the maximum bound",
+                 (double)LIMIT_OVERSHOOT);
+        const char *labels[] = {
+            "the MINIMUM bound", under, "the MAXIMUM bound", over,
+        };
+        // Even steps land on a bound (inspect for contact); odd steps go past
+        // it (confirm nothing moves).
+        const bool is_bound[] = { true, false, true, false };
 
-        wait_for_enter("Ready: commanding the MAXIMUM limit");
-        joint.move_to_angle(lim.max);
-        printf("      commanded %.0f (the bound). Mark this position.\n", (double)lim.max);
-        vTaskDelay(pdMS_TO_TICKS(800));
+        for (int k = 0; k < 4; ++k) {
+            char prompt[96];
+            snprintf(prompt, sizeof prompt, "Ready: commanding %s", labels[k]);
+            wait_for_enter(prompt);
 
-        wait_for_enter("Commanding 30 degrees ABOVE the limit -- it must not move");
-        joint.move_to_angle(lim.max + 30.0f);
-        printf("      commanded %.0f, should saturate at %.0f (+/- %.0f)\n",
-               (double)(lim.max + 30.0f), (double)lim.max, (double)SPOT_LIMIT_TOL);
-        vTaskDelay(pdMS_TO_TICKS(800));
+            print_spot_servo_math(joint, commands[k]);
+            const SpotMath m = compute_spot_math(joint, commands[k]);
+
+            // Refuse to send a command the hardware cannot act on. Sending it
+            // anyway would either write 0 counts (out-of-range path in
+            // move_to_pwm) or emit a pulse the servo ignores -- both of which
+            // read as "the clamp failed" when the real problem is that this
+            // joint's limit is not physically reachable.
+            if (m.count_out_of_range || m.pulse_unusable) {
+                printf("      -> NOT COMMANDED. Servo %d at %.1f deg maps to count %d\n",
+                       num, (double)m.effective, m.final_count);
+                printf("         (%.1f us), which is %s.\n", (double)m.final_width,
+                       m.count_out_of_range ? "outside the 12-bit counter"
+                                            : "outside the servo's usable pulse window");
+                printf("         This joint's limit is unreachable -- narrow the\n"
+                       "         bound in limit_for() rather than trusting this result.\n");
+                continue;
+            }
+
+            joint.move_to_angle(commands[k]);
+            printf("      -> servo %d commanded %.1f deg (count %d, %.1f us)\n",
+                   num, (double)commands[k], m.final_count, (double)m.final_width);
+            vTaskDelay(pdMS_TO_TICKS(800));
+
+            if (is_bound[k]) {
+                printf("\n      INSPECT AT THE BOUND. Check every one of these:\n");
+                printf("        - no part of this leg touching the body\n");
+                printf("        - no part of this leg touching another leg\n");
+                printf("        - no linkage or horn fouling its own bracket\n");
+                printf("        - NO PINCHED, STRETCHED, OR RUBBING WIRES\n");
+                printf("      Contact anywhere is a FAIL for this bound, even if\n");
+                printf("      the joint stopped exactly where it was told to.\n");
+                wait_for_enter("Inspected");
+            }
+            else {
+                printf("\n      The clamp should have held this at %.1f deg.\n",
+                       (double)m.effective);
+                printf("      It must not have moved AT ALL from the previous\n");
+                printf("      position. Any motion, even slight, is a FAIL.\n");
+                wait_for_enter("Confirmed whether it moved");
+            }
+        }
     }
 
-    printf("\n    PASS only if every joint held still on BOTH out-of-range\n"
-           "    commands, within +/- %.0f degrees of its bound. Any motion\n"
-           "    means the clamp is not holding.\n", (double)SPOT_LIMIT_TOL);
+    printf("\n    PASS requires BOTH, for every bound tested:\n");
+    printf("      1. No contact between components in separate parts of the\n"
+           "         body at any bound, and no pinched wires.\n");
+    printf("      2. No motion at all when commanded past a bound.\n");
+    printf("\n    These fail for different reasons and want different fixes:\n");
+    printf("      - contact at a bound  -> the BOUND is wrong; narrow it in\n"
+           "                               limit_for() and retest\n");
+    printf("      - motion past a bound -> the CLAMP is wrong; the bug is in\n"
+           "                               SpotServo::move_to_angle\n");
+    printf("    Note which one you saw, and on which joint, in the note below.\n");
     ask_result(7);
 }
 
@@ -674,23 +1126,27 @@ static void print_menu() {
     for (int i = 0; i < NUM_TESTS; ++i) {
         printf("  %d) %-32s [%s]\n", i, records[i].name, result_str(records[i].result));
     }
-    printf("  s) summary\n");
+    printf("  i) I2C bus scan (diagnostic)\n");
+    printf("  s) summary (Markdown, ready to paste)\n");
+    printf("  r) reset ONE test result\n");
+    printf("  c) clear ALL results\n");
     printf("  q) quit\n");
     printf("-----------------------------------------------------\n");
-    printf("  Order matters twice:\n");
+    printf("  Results persist across reboots. Order matters twice:\n");
     printf("    - run 4 (six-face) BEFORE 3 (calibrate)\n");
     printf("    - run 7 (limits) BEFORE 8 (protractor)\n");
     printf("Select: ");
 }
 
+// EFFECTS: Prints the results as a ready-to-paste Markdown section. The
+// firmware version comes from the app descriptor, which ESP-IDF fills from
+// `git describe` at build time -- so the commit is stamped in automatically
+// and there is nothing to look up by hand.
 static void print_summary() {
-    printf("\n=====================================================\n");
-    printf("  SUMMARY\n");
-    printf("=====================================================\n");
+    const esp_app_desc_t *app = esp_app_get_description();
+
     int passed = 0, failed = 0, skipped = 0, not_run = 0;
     for (int i = 0; i < NUM_TESTS; ++i) {
-        printf("  %-4s  %-32s  %s\n", result_str(records[i].result),
-               records[i].name, records[i].note);
         switch (records[i].result) {
             case Result::pass:    ++passed;  break;
             case Result::fail:    ++failed;  break;
@@ -698,13 +1154,20 @@ static void print_summary() {
             case Result::not_run: ++not_run; break;
         }
     }
-    printf("-----------------------------------------------------\n");
-    printf("  %d passed, %d failed, %d skipped, %d not run\n",
+
+    printf("\n\n----- copy from here -----\n\n");
+    printf("## Test run - build %s (%s %s)\n\n", app->version, app->date, app->time);
+    printf("Firmware: `%s` | ESP-IDF %s\n\n", app->version, app->idf_ver);
+    printf("| # | Test | Result | Note |\n");
+    printf("|---|------|--------|------|\n");
+    for (int i = 0; i < NUM_TESTS; ++i) {
+        printf("| %d | %s | %s | %s |\n", i, records[i].name,
+               result_str(records[i].result),
+               records[i].note[0] ? records[i].note : "");
+    }
+    printf("\n**%d passed, %d failed, %d skipped, %d not run**\n",
            passed, failed, skipped, not_run);
-    printf("\n  Copy this into test_results.md with today's date and the git\n");
-    printf("  SHA. The recorded numbers are the point -- they are what makes\n");
-    printf("  a future regression obvious.\n");
-    printf("=====================================================\n");
+    printf("\n----- copy to here -----\n\n");
 }
 
 void run_test_session() {
@@ -719,7 +1182,9 @@ void run_test_session() {
     printf("  - Robot body on a stand, legs unloaded and free to move\n");
     printf("  - Bench supply with a current limit set\n");
     printf("  - Nothing in the path of a joint that may snap to a new pose\n");
-    printf("  - Power switch within reach\n");
+    printf("  - Power switch within reach\n\n");
+
+    load_results();
 
     for (;;) {
         print_menu();
@@ -729,6 +1194,20 @@ void run_test_session() {
 
         if (line[0] == 'q') break;
         if (line[0] == 's') { print_summary(); continue; }
+        if (line[0] == 'i') { i2c_scan(); continue; }
+        if (line[0] == 'r') {
+            const int which = ask_int("Which test to reset", 0, NUM_TESTS - 1);
+            clear_one(which);
+            continue;
+        }
+        if (line[0] == 'c') {
+            char confirm[8];
+            printf("  Clear ALL %d results? This cannot be undone. (y/N): ", NUM_TESTS);
+            read_line(confirm, sizeof confirm);
+            if (confirm[0] == 'y' || confirm[0] == 'Y') clear_all();
+            else printf("  Cancelled.\n");
+            continue;
+        }
 
         char *end = NULL;
         const long choice = strtol(line, &end, 10);

@@ -8,10 +8,14 @@
 
 //////////////////// FREE FUNCTIONS ////////////////////
 
+// in the frame of reference of the SPOT.
+// the hip limits are the physical limits on theta_1
+// the shoulder limits are the physical limits on theta_3
+// the knee limits are the physical limits on theta_2
 AngleLimit limit_for(ServoType t) {
     switch (t) {
-        case ServoType::hip:      return { 40.0f, 175.0f };
-        case ServoType::shoulder: return {  0.0f, 180.0f };
+        case ServoType::hip:      return { -40.0f, 60.0f };
+        case ServoType::shoulder: return {   -5.0f, 135.0f };
         case ServoType::knee:     return { 20.0f, 180.0f };
         case ServoType::free:     return {  0.0f, 180.0f };
     }
@@ -91,7 +95,7 @@ Servo::Servo(int num)
         exit(1);
     }
 
-    if (led_pos > 15) {
+    if (led_pos > 15 || led_pos < 0) {
         ESP_LOGI("ERROR MESSAGE", "Failed to construct servo num %d because LED_pos \"%d\" is invalid.", servo_num, led_pos);
         exit(1);
     }

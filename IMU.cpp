@@ -125,8 +125,8 @@ uint8_t IMU::angRange_to_bin() const {
         case AngularRange::plus_minus_500dps:  return (uint8_t) (0b01 << 3);
         case AngularRange::plus_minus_1000dps: return (uint8_t) (0b10 << 3);
         case AngularRange::plus_minus_2000dps: return (uint8_t) (0b11 << 3);
-        __builtin_unreachable();
     }
+    __builtin_unreachable();
 }
 
 uint8_t IMU::accelRange_to_bin() const {
@@ -135,8 +135,8 @@ uint8_t IMU::accelRange_to_bin() const {
         case AccelRange::plus_minus_4g:  return (uint8_t) (0b01 << 3);
         case AccelRange::plus_minus_8g:  return (uint8_t) (0b10 << 3);
         case AccelRange::plus_minus_16g: return (uint8_t) (0b11 << 3);
-        __builtin_unreachable();
     }
+    __builtin_unreachable();
 }
 
 float IMU::ang_conversion() const {
@@ -145,8 +145,8 @@ float IMU::ang_conversion() const {
         case AngularRange::plus_minus_500dps:  return 1000.0f/65536.0f;
         case AngularRange::plus_minus_1000dps: return 2000.0f/65536.0f;
         case AngularRange::plus_minus_2000dps: return 4000.0f/65536.0f;
-        __builtin_unreachable();
     }
+    __builtin_unreachable();
 }
 
 float IMU::accl_conversion() const {
@@ -155,8 +155,8 @@ float IMU::accl_conversion() const {
         case AccelRange::plus_minus_4g:  return gravity * 8.0f/65536.0f;
         case AccelRange::plus_minus_8g:  return gravity * 16.0f/65536.0f;
         case AccelRange::plus_minus_16g: return gravity * 32.0f/65536.0f;
-        __builtin_unreachable();
     }
+    __builtin_unreachable();
 }
 
 void IMU::config_IMU() const {

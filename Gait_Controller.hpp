@@ -10,6 +10,6 @@
 #include "Common.hpp"
 #include "Spot_Model.hpp"
 
-legQuad<vec<float>> compute_next_points(const SpotModel * TPUP);
+legQuad<vec<float>> compute_next_points(const float phase);
 
 #endif

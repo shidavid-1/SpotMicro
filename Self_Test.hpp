@@ -13,6 +13,38 @@
 #define SELF_TEST_HPP
 
 #include "IMU.hpp"
+#include "Servo.hpp"
+
+// Usable pulse window for TPUP's servos. Counts outside this are still legal
+// 12-bit values that move_to_pwm writes without complaint, but the servo
+// ignores them -- which presents as "the joint refuses to move".
+constexpr float SERVO_MIN_PULSE_US = 500.0f;
+constexpr float SERVO_MAX_PULSE_US = 2500.0f;
+
+// Every intermediate value in SpotServo::move_to_angle.
+struct SpotAngleMath {
+    float       effective;      // angle after clamping to limit_for(type)
+    bool        clamped;
+    float       diff_angle;     // deg
+    float       diff_width;     // us
+    int         diff_count;
+    int         final_count;    // what move_to_pwm receives
+    float       final_width;    // us
+    const char *branch;         // e.g. "left hip"
+    const char *formula;
+};
+
+// TEST SUPPORT ONLY.
+// EFFECTS: Reproduces SpotServo::move_to_angle's arithmetic for `requested`
+// on servo `servo_num`, without commanding anything.
+//
+// WARNING: this RECOMPUTES rather than observes, because move_to_angle
+// exposes no intermediates. The per-servo branch is transcribed from
+// Servo.cpp. Change the formula there and you must change it here, or every
+// test that depends on this will confidently report the wrong numbers. The
+// permanent fix is to extract the math into Servo.cpp as a free function that
+// both the driver and the tests call.
+SpotAngleMath spot_angle_math(int servo_num, float requested);
 
 // EFFECTS: Runs every self test and logs a PASS/FAIL line per case plus a
 // summary. Returns true if all cases passed.

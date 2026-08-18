@@ -2,6 +2,7 @@
 #include "Common.hpp"
 #include "esp_log.h"
 #include <cmath>
+#include <cstdio>
 
 static const char *TAG = "SELFTEST";
 
@@ -18,6 +19,125 @@ static void expect_near(const char *what, float actual, float expected, float to
     else {
         ++cases_failed;
         ESP_LOGE(TAG, "FAIL  %-34s  got %.9g, expected %.9g", what, actual, expected);
+    }
+}
+
+
+// EFFECTS: Logs a PASS/FAIL line for a boolean condition and records it.
+static void expect_true(const char *what, bool ok, const char *detail) {
+    ++cases_run;
+    if (ok) {
+        ESP_LOGI(TAG, "PASS  %-34s  %s", what, detail);
+    }
+    else {
+        ++cases_failed;
+        ESP_LOGE(TAG, "FAIL  %-34s  %s", what, detail);
+    }
+}
+
+
+SpotAngleMath spot_angle_math(int servo_num, float requested) {
+    const Calibration     cal  = calibration_for(servo_num);
+    const SpotCalibration spot = spot_calibration_for(servo_num);
+    const AngleLimit      lim  = limit_for(spot.type);
+    const float           slope = cal.slope;
+
+    SpotAngleMath m = {};
+
+    // Step 1: clamp against the joint limits.
+    float angle = requested;
+    m.clamped = (requested < lim.min) || (requested > lim.max);
+    if (requested < lim.min) angle = lim.min;
+    if (requested > lim.max) angle = lim.max;
+    m.effective = angle;
+
+    // Step 2: per-servo branch, transcribed from SpotServo::move_to_angle.
+    m.branch  = "default (no mapping!)";
+    m.formula = "diff_angle = 0";
+    switch (servo_num) {
+        case 1: case 10:
+            m.diff_angle = -1.0f / slope * angle;
+            m.branch = "left hip";    m.formula = "diff_angle = -(1/slope) * angle";
+            break;
+        case 4: case 7:
+            m.diff_angle =  1.0f / slope * angle;
+            m.branch = "right hip";   m.formula = "diff_angle = +(1/slope) * angle";
+            break;
+        case 2: case 8:
+            m.diff_angle =  1.0f / slope * (45.0f - angle);
+            m.branch = "left upper";  m.formula = "diff_angle = +(1/slope) * (45 - angle)";
+            break;
+        case 5: case 11:
+            m.diff_angle = -1.0f / slope * (45.0f - angle);
+            m.branch = "right upper"; m.formula = "diff_angle = -(1/slope) * (45 - angle)";
+            break;
+        case 3: case 9:
+            m.diff_angle = -1.0f / slope * (90.0f - angle);
+            m.branch = "left lower";  m.formula = "diff_angle = -(1/slope) * (90 - angle)";
+            break;
+        case 6: case 12:
+            m.diff_angle =  1.0f / slope * (90.0f - angle);
+            m.branch = "right lower"; m.formula = "diff_angle = +(1/slope) * (90 - angle)";
+            break;
+        default:
+            break;
+    }
+
+    // Steps 3-5: degrees -> microseconds -> counts -> absolute count.
+    m.diff_width  = m.diff_angle * (1000.0f / 90.0f);
+    m.diff_count  = (int)roundf(m.diff_width / (float)period * 4096.0f);
+    m.final_count = spot.center_count + m.diff_count;
+    m.final_width = (float)m.final_count / 4096.0f * (float)period;
+    return m;
+}
+
+
+// EFFECTS: Checks that both ends of every joint's declared angle limit map to
+// a pulse the servo can actually act on.
+//
+// This is the check that catches the mismatch between limit_for(), which is
+// per joint TYPE, and center_count/slope, which are per SERVO. Two shoulders
+// with different center counts have different reachable ranges, but they
+// share one AngleLimit -- so a limit is only valid if the WORST servo of that
+// type can reach it. Nothing else in the codebase ties those two halves
+// together, which is how an unreachable limit goes unnoticed until a joint
+// silently refuses to move.
+static void test_limit_reachability() {
+    for (int num = 1; num <= 12; ++num) {
+        const SpotCalibration spot = spot_calibration_for(num);
+        const AngleLimit      lim  = limit_for(spot.type);
+
+        char label[40];
+        snprintf(label, sizeof label, "servo %2d (%s) limits", num, type_name(spot.type));
+
+        // A reversed limit makes the clamp send every angle to one bound or
+        // the other, so check the ordering before anything else.
+        if (lim.min > lim.max) {
+            char detail[96];
+            snprintf(detail, sizeof detail,
+                     "min %.1f > max %.1f -- reversed, clamp is broken",
+                     (double)lim.min, (double)lim.max);
+            expect_true(label, false, detail);
+            continue;
+        }
+
+        const SpotAngleMath lo = spot_angle_math(num, lim.min);
+        const SpotAngleMath hi = spot_angle_math(num, lim.max);
+
+        const SpotAngleMath *ends[] = { &lo, &hi };
+        bool ok = true;
+        for (const SpotAngleMath *m : ends) {
+            if (m->final_count < 0 || m->final_count > 4095) ok = false;
+            if (m->final_width < SERVO_MIN_PULSE_US)         ok = false;
+            if (m->final_width > SERVO_MAX_PULSE_US)         ok = false;
+        }
+
+        char detail[112];
+        snprintf(detail, sizeof detail,
+                 "%+.0f->%d(%.0fus)  %+.0f->%d(%.0fus)",
+                 (double)lim.min, lo.final_count, (double)lo.final_width,
+                 (double)lim.max, hi.final_count, (double)hi.final_width);
+        expect_true(label, ok, detail);
     }
 }
 
@@ -107,6 +227,7 @@ bool run_self_tests(IMU &imu) {
 
     IMUSelfTest::test_ang_conversion(imu);
     IMUSelfTest::test_accl_conversion(imu);
+    test_limit_reachability();
 
     if (cases_failed == 0) {
         ESP_LOGI(TAG, "==== %d/%d passed ====", cases_run, cases_run);

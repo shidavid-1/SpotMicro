@@ -21,6 +21,11 @@ void init_i2c() {
         .sda_pullup_en = GPIO_PULLUP_ENABLE,
         .scl_pullup_en = GPIO_PULLUP_ENABLE,
         .master        = { .clk_speed = 400000 },
+        // No constraint on the source clock: any clock that can produce
+        // 400 kHz is fine. Would need I2C_SCLK_SRC_FLAG_AWARE_DFS if dynamic
+        // frequency scaling were enabled, since an APB-derived clock would
+        // otherwise drift with the CPU frequency.
+        .clk_flags     = 0,
     };
     i2c_param_config(i2c_port, &conf);
     i2c_driver_install(i2c_port, I2C_MODE_MASTER, 0, 0, 0);

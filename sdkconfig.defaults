@@ -9,3 +9,14 @@ CONFIG_FREERTOS_HZ=1000
 # The session blocks on human input for minutes at a time. Without this the
 # task watchdog trips while you are lining up a protractor.
 CONFIG_ESP_TASK_WDT_INIT=n
+
+# ESP32-S3-DevKitC-1 with an 8 MB WROOM-1 module. IDF defaults to 2 MB, which
+# would truncate the image.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# driver/i2c.h is end-of-life in v6.0 and prints a 15-line banner on every
+# build. The driver still works and is not removed until v7.0; silencing it
+# here keeps real compiler errors readable. Remove this line when the I2C
+# layer is ported to driver/i2c_master.h.
+CONFIG_I2C_SUPPRESS_DEPRECATE_WARN=y

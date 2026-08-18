@@ -20,4 +20,6 @@ idf_component_register(
         ".."
     REQUIRES
         driver
+        nvs_flash      # Test_Session persists results across reboots
+        esp_app_format # esp_app_get_description(), for the build stamp
 )
