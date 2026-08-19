@@ -7,6 +7,7 @@
 #include "Common.hpp"
 
 #include "driver/i2c.h"
+#include <cmath>
 
 // Functions //
 
@@ -46,6 +47,10 @@ esp_err_t write_to_reg(uint8_t addr, uint8_t reg, uint8_t data) {
     valid_connection = i2c_master_cmd_begin(i2c_port, ptr, pdMS_TO_TICKS(50));
     i2c_cmd_link_delete(ptr);
     return valid_connection;
+}
+
+float distance_between(const vec<float> lhs, const vec<float> rhs) {
+    return (float)sqrt(pow(lhs.x - rhs.x, 2) + pow(lhs.y - rhs.y, 2) + pow(lhs.z - rhs.z, 2));
 }
 
 // Operator Overloads //

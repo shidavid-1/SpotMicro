@@ -11,6 +11,7 @@
 
 // Constants //
 constexpr float control_frequency = 80; // Hz
+constexpr float dt = 1.0f/control_frequency;
 constexpr gpio_num_t sda_pin = GPIO_NUM_11;
 constexpr gpio_num_t scl_pin = GPIO_NUM_12;
 constexpr i2c_port_t i2c_port = I2C_NUM_0;
@@ -67,8 +68,10 @@ void init_i2c();
 // This executes at I2C controller port.
 esp_err_t write_to_reg(uint8_t addr, uint8_t reg, uint8_t data);
 
+float distance_between(const vec<float> lhs, const vec<float> rhs);
+
 // Operator Overloads //
 
-vec<float> operator-(const vec<float> lhs, const vec<float> rhs);
+vec<float> operator-(const vec<float> &lhs, const vec<float> &rhs);
 
 #endif

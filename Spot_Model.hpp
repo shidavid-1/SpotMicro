@@ -22,36 +22,8 @@ constexpr int     STEP_DELAY_MS           = 25;
 constexpr int     SERVO_SEQUENCE_DELAY_MS = 2.5;
 // ────────────────────────────────────────────────────────────────────────
 
-class SpotModel {
-    private:
-        Leg frontLeft;
-        Leg frontRight;
-        Leg backLeft;
-        Leg backRight;
-        vec<float> orientation; // Tells me the pitch, roll, and yaw with respect to the initial orientation
-                                // the code works best when this initial orientation has the body transverse
-                                // plane perpendicular to gravity.
-        vec<float> position;    // I actually don't think the x y coordinates matter.
-        const legQuad<vec<float>> leg_origins =
-        {
-            {1.0f, 1.0f, 1.0f},
-            {1.0f, 1.0f, 1.0f},
-            {1.0f, 1.0f, 1.0f},
-            {1.0f, 1.0f, 1.0f}
-        };
-    
-    public:
-        void set_orientation(vec<float> ori);
-
-        void set_positition(vec<float> pos);
-
-        vec<float> get_orientation() const;
-        
-        vec<float> get_position() const;
-
-        legQuad<vec<float>> get_origins() const;
-};
-
+// NOTE: Leg is defined before SpotModel because SpotModel holds four Leg
+// members by value, which requires Leg to be a complete type at that point.
 class Leg {
     private:
         LegType type;
@@ -81,6 +53,36 @@ class Leg {
         // EFFECTS: Traces a circle with the foot tip, in NUM_STEPS steps,
         // clockwise if `clockwise` is true and counter-clockwise otherwise.
         void trace_circle(bool clockwise);
+};
+
+class SpotModel {
+    private:
+        Leg frontLeft;
+        Leg frontRight;
+        Leg backLeft;
+        Leg backRight;
+        vec<float> orientation; // Tells me the pitch, roll, and yaw with respect to the initial orientation
+                                // the code works best when this initial orientation has the body transverse
+                                // plane perpendicular to gravity.
+        vec<float> position;    // I actually don't think the x y coordinates matter.
+        const legQuad<vec<float>> leg_origins =
+        { /* NEEDS TO BE UPDATED WITH ACTUAL VALUES */
+            {1.0f, 1.0f, 1.0f},
+            {1.0f, 1.0f, 1.0f},
+            {1.0f, 1.0f, 1.0f},
+            {1.0f, 1.0f, 1.0f}
+        };
+    
+    public:
+        void set_orientation(vec<float> ori);
+
+        void set_positition(vec<float> pos);
+
+        vec<float> get_orientation() const;
+        
+        vec<float> get_position() const;
+
+        legQuad<vec<float>> get_origins() const;
 };
 
 #endif
