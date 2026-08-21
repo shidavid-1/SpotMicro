@@ -47,9 +47,10 @@ constexpr float REST_ACCEL_TOL = 0.5f;    // m/s^2
 constexpr float SWEEP_ANGLES[] = { 0.0f, 45.0f, 90.0f, 145.0f, 180.0f };
 constexpr int   NUM_SWEEP_ANGLES = sizeof(SWEEP_ANGLES) / sizeof(SWEEP_ANGLES[0]);
 
-// Repeat-to-zero endurance test: 300 commands to 0 degrees, split into three
-// blocks so a wiring or mounting change can be made between them and the
-// behavior compared block to block.
+// Repeat-to-zero endurance diagnostic: 300 commands to 0 degrees, split into
+// three blocks so a wiring or mounting change can be made between them and the
+// behavior compared block to block. It has no single pass/fail behavior, so it
+// records no verdict -- see the diagnostic below.
 constexpr int REPEAT_BLOCK_SIZE   = 100;
 constexpr int REPEAT_NUM_BLOCKS   = 3;
 constexpr int REPEAT_DELAY_MS     = 100;  // between consecutive commands
@@ -106,6 +107,16 @@ static void wait_for_enter(const char *prompt) {
     char scratch[8];
     printf("\n    >> %s, then press Enter... ", prompt);
     read_line(scratch, sizeof scratch);
+}
+
+// EFFECTS: Prints prompt and waits for the user to press Enter, or to type q
+// and press Enter. Returns true if they asked to quit, so a caller running a
+// long walk can stop between steps rather than only at the end of it.
+static bool wait_for_enter_or_quit(const char *prompt) {
+    char scratch[8];
+    printf("\n    >> %s, then press Enter (q + Enter to quit)... ", prompt);
+    read_line(scratch, sizeof scratch);
+    return scratch[0] == 'q' || scratch[0] == 'Q';
 }
 
 // EFFECTS: Prompts for an integer in [lo, hi]. Re-asks until valid.
@@ -203,7 +214,6 @@ static TestRecord records[] = {
     { "Servo::move_to_pwm (scoped)",       Result::not_run, "" },  // 6
     { "SpotServo #1: limit saturation",    Result::not_run, "" },  // 7
     { "SpotServo #2: protractor angles",   Result::not_run, "" },  // 8
-    { "Servo repeat-to-zero (3 x 100)",    Result::not_run, "" },  // 9
 };
 constexpr int NUM_TESTS = sizeof(records) / sizeof(records[0]);
 
@@ -248,7 +258,7 @@ static const char *NVS_KEY       = "results";
 
 // Bump when the layout of PersistedRecord or the test list changes, so stale
 // blobs from an older firmware are discarded rather than misread.
-constexpr uint8_t PERSIST_VERSION = 2;
+constexpr uint8_t PERSIST_VERSION = 3;
 
 struct PersistedBlob {
     uint8_t version;
@@ -1076,10 +1086,58 @@ static void print_spot_servo_math(const SpotServo &joint, float requested) {
 // Servo numbering runs in per-leg triples -- (1,2,3) (4,5,6) (7,8,9)
 // (10,11,12), each being hip, shoulder, knee -- so the knee belonging to the
 // leg under test is always (shoulder number + 1).
+//
+// The first two triples (servos 1-6) are the FRONT pair of legs and the last
+// two (servos 7-12) the REAR pair, following the frontLeft, frontRight,
+// backLeft, backRight ordering LegType uses in Common.hpp. Two of the pose
+// transitions below depend on that split, so fix it here if the harness is
+// ever wired the other way round.
+
+// Where the straighten pass parks a leg: knee fully extended, shoulder swung
+// out away from the body. Commanded through move_to_angle, so the knee lands
+// on the knee maximum -- limit_for clamps 180 to 176 -- which is the same
+// place the shoulder pose asks a knee to be anyway.
+constexpr float STRAIGHT_SHOULDER_ANGLE = 90.0f;
+constexpr float STRAIGHT_KNEE_ANGLE     = 180.0f;
+
+// Between consecutive servo commands, so a dozen servos do not all draw stall
+// current at once. A stagger, not a settle: the joints still move together.
+constexpr int POSE_STAGGER_MS = 150;
+
+// A hip coming off a bound has up to 100 degrees to travel back to neutral,
+// and by then the straighten pass has extended the leg into one long lever --
+// commanded in one go, the servo slams the whole arm from a standstill. The
+// same move issued as a run of short commands ends in the same place with a
+// fraction of the acceleration. These set how short: no single command asks
+// for more than POSE_STEP_MAX_DEG, and each gets POSE_STEP_MS to run before
+// the next is sent.
+constexpr float POSE_STEP_MAX_DEG = 15.0f;
+constexpr int   POSE_STEP_MS      = 120;
+
+// After each step of the straighten pass. This one IS a settle: the whole
+// point of straightening is that it finishes before anything else moves, so it
+// has to cover the joint's travel time, not just spread the current draw.
+constexpr int STRAIGHTEN_SETTLE_MS = 900;
+
+// Between the last REAR servo command and the first FRONT one when the legs
+// fold back into the hip pose. The rear pair must be fully contracted before a
+// front leg so much as starts moving, and the six rear commands are staggered
+// over 750 ms before this hold even begins, so the first rear joint has had
+// most of two seconds by the time the front pair is touched. Raise it again if
+// a rear leg is ever still moving when the front pair starts.
+constexpr int REAR_FIRST_SETTLE_MS = 1000;
+
+// Where the leg under test parks its own knee while its shoulder is swept to
+// its bounds. This used to be the knee's center count, which works out to 90
+// deg by construction; 70 deg is a set angle instead, so it is commanded
+// through move_to_angle like any other posed joint.
+constexpr float SHOULDER_TEST_KNEE_ANGLE = 70.0f;
+
+// Servo numbers run 0-12; index 0 is the reserved uncalibrated servo.
+constexpr int POSE_TABLE_SIZE = 13;
 
 struct PoseTarget {
     bool  command;      // false: leave this joint where it is
-    bool  use_center;   // true: command center_count directly, ignoring angle
     float angle;
 };
 
@@ -1087,7 +1145,7 @@ struct PoseTarget {
 // swept to its limits.
 static PoseTarget pose_target_for(int servo, ServoType servo_type,
                                   int under_test, ServoType test_type) {
-    if (servo == under_test) return { false, false, 0.0f };
+    if (servo == under_test) return { false, 0.0f };
 
     const int leg_under_test = (under_test - 1) / 3;
     const int leg_of_servo   = (servo - 1) / 3;
@@ -1095,40 +1153,251 @@ static PoseTarget pose_target_for(int servo, ServoType servo_type,
     switch (test_type) {
         case ServoType::shoulder:
             // Hips centered, other shoulders at 90, other knees folded to
-            // 180, and this leg's own knee parked at its center count.
-            if (servo_type == ServoType::hip)      return { true, false,   0.0f };
-            if (servo_type == ServoType::shoulder) return { true, false,  90.0f };
-            if (leg_of_servo == leg_under_test)    return { true, true,    0.0f };
-            return { true, false, 180.0f };
+            // 180, and this leg's own knee parked at SHOULDER_TEST_KNEE_ANGLE.
+            if (servo_type == ServoType::hip)      return { true,   0.0f };
+            if (servo_type == ServoType::shoulder) return { true,  90.0f };
+            if (leg_of_servo == leg_under_test)
+                return { true, SHOULDER_TEST_KNEE_ANGLE };
+            return { true, 180.0f };
 
         case ServoType::knee:
             // Hips centered, all shoulders at 90. Other knees are left alone.
-            if (servo_type == ServoType::hip)      return { true, false,  0.0f };
-            if (servo_type == ServoType::shoulder) return { true, false, 90.0f };
-            return { false, false, 0.0f };
+            if (servo_type == ServoType::hip)      return { true,  0.0f };
+            if (servo_type == ServoType::shoulder) return { true, 90.0f };
+            return { false, 0.0f };
 
         case ServoType::hip:
             // Other hips centered, shoulders at 0, knees tucked to 20.
-            if (servo_type == ServoType::hip)      return { true, false,  0.0f };
-            if (servo_type == ServoType::shoulder) return { true, false,  0.0f };
-            return { true, false, 20.0f };
+            if (servo_type == ServoType::hip)      return { true,  0.0f };
+            if (servo_type == ServoType::shoulder) return { true,  0.0f };
+            return { true, 20.0f };
 
         case ServoType::free:
-            return { false, false, 0.0f };
+            return { false, 0.0f };
     }
-    return { false, false, 0.0f };
+    return { false, 0.0f };
+}
+
+
+//////////////////// POSE TRANSITIONS ////////////////////
+
+// Which pose the robot was last put in, so a call knows where it is starting
+// FROM as well as where it is going. ServoType::free stands for "unknown":
+// nothing has been posed yet this run, so the arrangement could be anything.
+//
+// The two rules below are hardware facts found on the bench, not anything the
+// code can derive from the pose tables. Both are about the PATH between two
+// poses rather than the poses themselves: each pose is safe to sit in, and the
+// collision happens on the way there.
+static ServoType last_pose = ServoType::free;
+
+// The angle each servo was last commanded to, indexed by servo number, or NAN
+// for one this run has not commanded yet. A ramped move needs to know where it
+// is starting from, and nothing on this robot reports its own position.
+static float last_angle[POSE_TABLE_SIZE] = {};
+
+// EFFECTS: Forgets where the robot is. Called at the start of a walk: whatever
+// an earlier test, the jog tool, or a hand left it in, the session cannot know.
+static void reset_pose_memory() {
+    last_pose = ServoType::free;
+    for (int i = 0; i < POSE_TABLE_SIZE; ++i) last_angle[i] = NAN;
+}
+
+// EFFECTS: How many commands a pose move of servo `n` to `target` should be
+// split into. Only a HIP ramps: it is the joint that has to come off a bound
+// with the leg extended into a long lever, which is the move that was stressing
+// the joint. Everything else keeps its single command. 1 means no ramp -- which
+// is also the answer when the session has no idea where the joint is starting
+// from, since there is nothing to interpolate.
+static int pose_steps_for(int n, ServoType type, float target) {
+    if (type != ServoType::hip || std::isnan(last_angle[n])) return 1;
+    const int steps = (int)std::ceil(std::fabs(target - last_angle[n]) / POSE_STEP_MAX_DEG);
+    return steps < 1 ? 1 : steps;
+}
+
+// MODIFIES: servo `n`.
+// EFFECTS: Commands `n` to `target`, spread over `steps` commands from wherever
+// the session last left it. Every step is a real move_to_angle, so the joint
+// limits apply to each one exactly as they would to the single command this
+// replaces, and the joint ends up in the same place either way.
+static void move_pose_angle(SpotServo &s, int n, float target, int steps) {
+    if (steps <= 1 || std::isnan(last_angle[n])) {
+        s.move_to_angle(target);
+    }
+    else {
+        const float from = last_angle[n];
+        for (int i = 1; i <= steps; ++i) {
+            s.move_to_angle(from + (target - from) * (float)i / (float)steps);
+            vTaskDelay(pdMS_TO_TICKS(POSE_STEP_MS));
+        }
+    }
+    last_angle[n] = target;
+}
+
+// EFFECTS: True if the move from `from` to `to` has to open the legs out
+// straight before it commands the final pose. Going from the hip pose, where
+// the legs sit tucked (shoulders at 0, knees folded to 20), into the shoulder
+// pose swings each leg out while it is still folded, and the joints of a leg
+// collide on the way -- seen on the bench. An UNKNOWN starting pose is treated
+// the same, since it may well be the hip pose.
+static bool needs_straighten_first(ServoType from, ServoType to) {
+    return to == ServoType::shoulder
+        && (from == ServoType::hip || from == ServoType::free);
+}
+
+// EFFECTS: True if the move from `from` to `to` has to fold the rear legs
+// before the front ones. Coming out of the knee pose into the hip pose every
+// leg contracts, and the rear pair has to be all the way in before a front leg
+// starts moving. An UNKNOWN starting pose is treated the same: a walk that was
+// quit part way through leaves the robot in whichever pose it got to, and the
+// knee pose is one of them.
+static bool needs_rear_first(ServoType from, ServoType to) {
+    return to == ServoType::hip
+        && (from == ServoType::knee || from == ServoType::free);
+}
+
+// MODIFIES: every shoulder and knee on the robot.
+// EFFECTS: Opens all four legs out straight -- shoulders first, then knees --
+// with the FRONT pair finishing completely before the REAR pair moves at all,
+// and each step given time to arrive before the next starts. Records what each
+// joint was commanded to in `straightened`, indexed by servo number, leaving
+// NAN for the hips, which this pass does not touch.
+static void straighten_legs(float *straightened) {
+    printf("\n     -- Straighten pass --\n");
+    printf("        The legs open out straight BEFORE the pose is commanded:\n");
+    printf("        shoulders -> %.0f deg, then knees -> %.0f deg (clamped to the\n"
+           "        knee maximum, %.0f). Front pair first, then the rear pair,\n"
+           "        %d ms per step to arrive.\n",
+           (double)STRAIGHT_SHOULDER_ANGLE, (double)STRAIGHT_KNEE_ANGLE,
+           (double)limit_for(ServoType::knee).max, STRAIGHTEN_SETTLE_MS);
+
+    // Shoulders before knees: the leg swings clear of the body while it is
+    // still folded up, and only extends once it is out there.
+    const ServoType joint_order[] = { ServoType::shoulder, ServoType::knee };
+
+    for (int half = 0; half < 2; ++half) {
+        const bool front = (half == 0);
+        const int  lo    = front ?  1 :  7;
+        const int  hi    = front ?  6 : 12;
+        printf("        %s pair (servos %d-%d):\n",
+               front ? "FRONT" : "REAR", lo, hi);
+
+        for (const ServoType which : joint_order) {
+            const float target = (which == ServoType::shoulder)
+                               ? STRAIGHT_SHOULDER_ANGLE
+                               : STRAIGHT_KNEE_ANGLE;
+            for (int n = lo; n <= hi; ++n) {
+                SpotServo s(n);
+                if (s.get_type() != which) continue;
+                s.move_to_angle(target);
+                straightened[n] = target;
+                last_angle[n]   = target;
+                printf("          servo %2d (%-8s): %+.0f deg\n",
+                       n, type_name(s.get_type()), (double)target);
+                vTaskDelay(pdMS_TO_TICKS(POSE_STAGGER_MS));
+            }
+            vTaskDelay(pdMS_TO_TICKS(STRAIGHTEN_SETTLE_MS));
+        }
+    }
+    printf("        Legs straight.\n");
+}
+
+// EFFECTS: Commands servo `n` to its place in the pose, or says why it is
+// being left alone. Returns true if a command was actually sent. `straightened`
+// holds what the straighten pass commanded each servo, or NAN for one it did
+// not touch, so a joint that pass already parked on its pose target is not
+// commanded a second time. `deferred` is a servo the fold-back pass will place
+// afterwards, or 0 for none.
+static bool command_pose_servo(int n, int under_test, ServoType test_type,
+                               const float *straightened, int deferred) {
+    SpotServo s(n);
+    const PoseTarget t = pose_target_for(n, s.get_type(), under_test, test_type);
+
+    if (n == deferred) {
+        printf("      servo %2d (%-8s): held for the fold-back pass\n",
+               n, type_name(s.get_type()));
+        return false;
+    }
+
+    if (!t.command) {
+        printf("      servo %2d (%-8s): %s\n", n, type_name(s.get_type()),
+               n == under_test ? "UNDER TEST, not posed" : "left as-is");
+        return false;
+    }
+
+    // Compared as REQUESTED angles, which is what both sides are: the
+    // straighten pass and the pose both ask a knee for 180, and move_to_angle
+    // clamps both to the same 176.
+    if (!std::isnan(straightened[n])
+        && std::fabs(straightened[n] - t.angle) < 0.5f) {
+        printf("      servo %2d (%-8s): %+.0f deg already, from the straighten pass\n",
+               n, type_name(s.get_type()), (double)t.angle);
+        return false;
+    }
+
+    const int steps = pose_steps_for(n, s.get_type(), t.angle);
+    if (steps > 1) {
+        printf("      servo %2d (%-8s): %+.0f deg, ramped from %+.0f in %d steps"
+               " of %.0f deg\n",
+               n, type_name(s.get_type()), (double)t.angle, (double)last_angle[n],
+               steps, (double)(std::fabs(t.angle - last_angle[n]) / (float)steps));
+    }
+    else {
+        printf("      servo %2d (%-8s): %+.0f deg\n",
+               n, type_name(s.get_type()), (double)t.angle);
+    }
+    move_pose_angle(s, n, t.angle, steps);
+    // Stagger so a dozen servos do not all draw stall current at once.
+    vTaskDelay(pdMS_TO_TICKS(POSE_STAGGER_MS));
+    return true;
+}
+
+// MODIFIES: the knee on the leg under test.
+// EFFECTS: Puts the leg under test into the angles the SHOULDER POSE asks for,
+// after the straighten pass has taken it out of them and after every other
+// joint is placed. pose_target_for skips the joint under test, so those two
+// angles are the ones it hands that leg's peers: 90 deg for a shoulder -- where
+// the straighten pass already left it, so nothing is re-commanded -- and
+// SHOULDER_TEST_KNEE_ANGLE for the knee.
+//
+// Straightening is a way THROUGH the transition, not a place to test from. This
+// is the last thing to move before the first bound is commanded.
+static void fold_back_leg(int shoulder) {
+    const int knee = shoulder + 1;   // per-leg triples: hip, shoulder, knee
+
+    printf("\n     -- Fold-back pass (the leg under test) --\n");
+    printf("        Servos %d and %d take the angles the shoulder pose asks for,\n"
+           "        now that the straighten pass is done with them.\n",
+           shoulder, knee);
+
+    printf("        servo %2d (shoulder): %+.0f deg already, from the straighten"
+           " pass\n", shoulder, (double)STRAIGHT_SHOULDER_ANGLE);
+
+    SpotServo kn(knee);
+    kn.move_to_angle(SHOULDER_TEST_KNEE_ANGLE);
+    last_angle[knee] = SHOULDER_TEST_KNEE_ANGLE;
+    printf("        servo %2d (knee    ): %+.0f deg\n",
+           knee, (double)SHOULDER_TEST_KNEE_ANGLE);
+    vTaskDelay(pdMS_TO_TICKS(STRAIGHTEN_SETTLE_MS));
 }
 
 // EFFECTS: Describes and then commands the pre-test pose for the joint under
-// test. Every other joint moves, so this pauses for confirmation first.
-static void prepare_safe_pose(int under_test, ServoType test_type) {
+// test, sequencing the transition out of the previous pose where that
+// transition needs it. Every other joint moves, so this pauses for
+// confirmation first. Returns false if the operator asked to quit at that
+// prompt, in which case nothing has been commanded.
+static bool prepare_safe_pose(int under_test, ServoType test_type) {
     printf("\n  -- Pre-test pose (servo %d, %s under test) --\n",
            under_test, type_name(test_type));
+    printf("     coming from: %s pose\n",
+           last_pose == ServoType::free ? "unknown (nothing posed yet)"
+                                        : type_name(last_pose));
 
     switch (test_type) {
         case ServoType::shoulder:
             printf("     hips -> 0 deg, other shoulders -> 90 deg,\n"
-                   "     other knees -> 180 deg, this leg's knee -> center count\n");
+                   "     other knees -> 180 deg, this leg's knee -> %.0f deg\n",
+                   (double)SHOULDER_TEST_KNEE_ANGLE);
             break;
         case ServoType::knee:
             printf("     hips -> 0 deg, all shoulders -> 90 deg\n"
@@ -1140,43 +1409,68 @@ static void prepare_safe_pose(int under_test, ServoType test_type) {
             break;
         case ServoType::free:
             printf("     no pose defined for a free servo; nothing will move\n");
-            return;
+            return true;
+    }
+
+    const bool straighten = needs_straighten_first(last_pose, test_type);
+    const bool rear_first = needs_rear_first(last_pose, test_type);
+
+    if (straighten) {
+        printf("\n     TRANSITION RULE (%s pose -> shoulder pose): the legs open\n"
+               "     out straight FIRST -- front pair, then rear pair -- and only\n"
+               "     then move into the pose above. Going there directly folds a\n"
+               "     leg's joints into each other. The leg under test then takes\n"
+               "     its posed angles back, before any bound is commanded.\n",
+               last_pose == ServoType::free ? "unknown" : "hip");
+    }
+    if (rear_first) {
+        printf("\n     TRANSITION RULE (%s pose -> hip pose): the REAR legs\n"
+               "     contract FIRST and get %d ms to finish before a single front\n"
+               "     joint is commanded.\n",
+               last_pose == ServoType::free ? "unknown" : "knee",
+               REAR_FIRST_SETTLE_MS);
     }
 
     printf("\n     ELEVEN joints are about to move. Keep hands clear and make\n"
            "     sure the legs have room to swing.\n");
-    wait_for_enter("Clear of the robot");
+    if (wait_for_enter_or_quit("Clear of the robot")) return false;
 
-    for (int n = 1; n <= 12; ++n) {
-        SpotServo s(n);
-        const PoseTarget t = pose_target_for(n, s.get_type(), under_test, test_type);
+    // The knee the fold-back pass will place once everything else is posed.
+    // straighten only ever fires for a shoulder test, so under_test is the
+    // shoulder and under_test + 1 is its knee.
+    const int fold_knee = straighten ? under_test + 1 : 0;
 
-        if (!t.command) {
-            printf("      servo %2d (%-8s): %s\n", n, type_name(s.get_type()),
-                   n == under_test ? "UNDER TEST, not posed" : "left as-is");
-            continue;
-        }
+    float straightened[POSE_TABLE_SIZE];
+    for (int i = 0; i < POSE_TABLE_SIZE; ++i) straightened[i] = NAN;
+    if (straighten) straighten_legs(straightened);
 
-        if (t.use_center) {
-            // Commanded by count rather than angle: the angle-to-count math
-            // is the thing under test, so the parked position should not
-            // depend on it.
-            s.move_to_pwm(effective_center(n));
-            printf("      servo %2d (%-8s): center count %d%s\n",
-                   n, type_name(s.get_type()), effective_center(n),
-                   center_is_overridden(n) ? " (session override)" : "");
+    printf("\n     -- Pose pass --\n");
+    if (rear_first) {
+        printf("        REAR legs (servos 7-12) contract first:\n");
+        for (int n = 7; n <= 12; ++n) {
+            command_pose_servo(n, under_test, test_type, straightened, fold_knee);
         }
-        else {
-            s.move_to_angle(t.angle);
-            printf("      servo %2d (%-8s): %+.0f deg\n",
-                   n, type_name(s.get_type()), (double)t.angle);
+        printf("        Rear pair commanded. Holding %d ms for it to finish\n"
+               "        contracting before the front pair is touched.\n",
+               REAR_FIRST_SETTLE_MS);
+        vTaskDelay(pdMS_TO_TICKS(REAR_FIRST_SETTLE_MS));
+        printf("        FRONT legs (servos 1-6):\n");
+        for (int n = 1; n <= 6; ++n) {
+            command_pose_servo(n, under_test, test_type, straightened, fold_knee);
         }
-        // Stagger so eleven servos do not all draw stall current at once.
-        vTaskDelay(pdMS_TO_TICKS(150));
+    }
+    else {
+        for (int n = 1; n <= 12; ++n) {
+            command_pose_servo(n, under_test, test_type, straightened, fold_knee);
+        }
     }
 
+    if (straighten) fold_back_leg(under_test);
+
     printf("     Pose set.\n");
+    last_pose = test_type;
     vTaskDelay(pdMS_TO_TICKS(400));
+    return true;
 }
 
 
@@ -1472,6 +1766,9 @@ static void test_spotservo_limits() {
            "a hand on the power switch and listen for buzzing.\n");
     printf("Run this BEFORE the protractor test: it is the one that protects\n"
            "the hardware.\n");
+    printf("\nWalking all twelve does not have to be finished in one go: q +\n"
+           "Enter at ANY prompt below stops the walk where it is and goes\n"
+           "straight to the verdict.\n");
 
     const int choice = ask_int("Servo number (0 = walk all twelve)", 0, 12);
     ensure_pca_ready();
@@ -1479,7 +1776,15 @@ static void test_spotservo_limits() {
     const int first = (choice == 0) ? 1  : choice;
     const int last  = (choice == 0) ? 12 : choice;
 
-    for (int num = first; num <= last; ++num) {
+    // However the robot was left -- by an earlier test, by the jog tool, or by
+    // hand -- the session cannot know, so the first transition is sequenced as
+    // if it were coming from the most awkward pose it could be in.
+    reset_pose_memory();
+
+    bool quit       = false;
+    int  stopped_at = 0;
+
+    for (int num = first; num <= last && !quit; ++num) {
         SpotServo joint(num);
         const AngleLimit lim = limit_for(joint.get_type());
 
@@ -1487,7 +1792,11 @@ static void test_spotservo_limits() {
                num, type_name(joint.get_type()),
                (double)lim.min, (double)lim.max, joint.get_center_count());
 
-        prepare_safe_pose(num, joint.get_type());
+        if (!prepare_safe_pose(num, joint.get_type())) {
+            quit = true;
+            stopped_at = num;
+            break;
+        }
 
         // Four commands per joint, alternating: a bound, then past that same
         // bound. The pair either side of a bound should produce IDENTICAL
@@ -1511,10 +1820,14 @@ static void test_spotservo_limits() {
         // it (confirm nothing moves).
         const bool is_bound[] = { true, false, true, false };
 
-        for (int k = 0; k < 4; ++k) {
+        for (int k = 0; k < 4 && !quit; ++k) {
             char prompt[96];
             snprintf(prompt, sizeof prompt, "Ready: commanding %s", labels[k]);
-            wait_for_enter(prompt);
+            if (wait_for_enter_or_quit(prompt)) {
+                quit = true;
+                stopped_at = num;
+                break;
+            }
 
             print_spot_servo_math(joint, commands[k]);
             const SpotMath m = compute_spot_math(joint, commands[k]);
@@ -1536,6 +1849,9 @@ static void test_spotservo_limits() {
             }
 
             joint.move_to_angle(commands[k]);
+            // Where this joint now is, so the next pose can ramp back off the
+            // bound instead of snapping off it.
+            last_angle[num] = m.effective;
             printf("      -> servo %d commanded %.1f deg (count %d, %.1f us)\n",
                    num, (double)commands[k], m.final_count, (double)m.final_width);
             vTaskDelay(pdMS_TO_TICKS(800));
@@ -1548,16 +1864,32 @@ static void test_spotservo_limits() {
                 printf("        - NO PINCHED, STRETCHED, OR RUBBING WIRES\n");
                 printf("      Contact anywhere is a FAIL for this bound, even if\n");
                 printf("      the joint stopped exactly where it was told to.\n");
-                wait_for_enter("Inspected");
+                if (wait_for_enter_or_quit("Inspected")) {
+                    quit = true;
+                    stopped_at = num;
+                }
             }
             else {
                 printf("\n      The clamp should have held this at %.1f deg.\n",
                        (double)m.effective);
                 printf("      It must not have moved AT ALL from the previous\n");
                 printf("      position. Any motion, even slight, is a FAIL.\n");
-                wait_for_enter("Confirmed whether it moved");
+                if (wait_for_enter_or_quit("Confirmed whether it moved")) {
+                    quit = true;
+                    stopped_at = num;
+                }
             }
         }
+    }
+
+    if (quit) {
+        printf("\n    STOPPED EARLY during servo %d.\n", stopped_at);
+        if (stopped_at < last) {
+            printf("    Servos %d-%d were not tested at all.\n",
+                   stopped_at + 1, last);
+        }
+        printf("    The verdict below covers only what was actually walked --\n"
+               "    say so in the note.\n");
     }
 
     printf("\n    PASS requires BOTH, for every bound tested:\n");
@@ -1665,15 +1997,20 @@ static void test_spotservo_protractor() {
 }
 
 
-// T9: repeat-to-zero endurance. Commands one servo to 0 degrees
-// REPEAT_BLOCK_SIZE times per block, REPEAT_NUM_BLOCKS blocks, 300 commands
-// in total. The point is not the angle -- it is what changes BETWEEN blocks:
-// the operator describes the change (reversed connection, different supply,
-// remounted horn) before each block, and that label is printed with the block
-// so the console log reads as a labeled comparison rather than 300 identical
-// lines.
-static void test_servo_repeat_zero() {
-    printf("\n--- Servo repeat-to-zero (%d x %d) ---\n",
+//////////////////// REPEAT-TO-ZERO DIAGNOSTIC ////////////////////
+
+// Repeat-to-zero endurance. Commands one servo to 0 degrees REPEAT_BLOCK_SIZE
+// times per block, REPEAT_NUM_BLOCKS blocks, 300 commands in total. The point
+// is not the angle -- it is what changes BETWEEN blocks: the operator describes
+// the change (reversed connection, different supply, remounted horn) before
+// each block, and that label is printed with the block so the console log reads
+// as a labeled comparison rather than 300 identical lines.
+//
+// A diagnostic rather than a test: there is no one behavior to pass or fail,
+// only a labeled comparison to read, so no verdict is recorded. Anything a run
+// turns up belongs in the note of whichever test it explains.
+static void diagnostic_servo_repeat_zero() {
+    printf("\n--- Servo repeat-to-zero (%d x %d), diagnostic ---\n",
            REPEAT_NUM_BLOCKS, REPEAT_BLOCK_SIZE);
     printf("Desired behavior: %d commands to 0 degrees leave the servo at the\n"
            "same physical position every time -- no creep, no buzzing, no\n"
@@ -1684,6 +2021,8 @@ static void test_servo_repeat_zero() {
            REPEAT_BLOCK_SIZE);
     printf("Commands are spaced %d ms apart, so a block takes about %d s.\n",
            REPEAT_DELAY_MS, (REPEAT_BLOCK_SIZE * REPEAT_DELAY_MS) / 1000);
+    printf("\nNo verdict is recorded: this is a diagnostic, and what it\n"
+           "produces is the labeled log below.\n");
 
     int num = 0, led_pos = 0;
     ask_servo_and_channel(&num, &led_pos);
@@ -1747,16 +2086,47 @@ static void test_servo_repeat_zero() {
                observations[block][0] ? observations[block] : "(no observation)");
     }
 
-    printf("\n    PASS if the servo held the same position through every block\n"
-           "    and blocks differ only where you expected them to. Creep that\n"
-           "    accumulates over a block points at the servo losing or\n"
-           "    mis-latching commands; a difference that appears only in one\n"
-           "    block belongs to whatever you changed for it.\n");
-    ask_result(9);
+    printf("\n    What to look for: the servo holding the same position\n"
+           "    through every block, with blocks differing only where you\n"
+           "    expected them to. Creep that accumulates over a block points at\n"
+           "    the servo losing or mis-latching commands; a difference that\n"
+           "    appears only in one block belongs to whatever you changed for\n"
+           "    it. If a run explains a test result, record it in that test's\n"
+           "    note.\n");
 }
 
 
 //////////////////// MENU ////////////////////
+
+// EFFECTS: Records verdicts for tests that were performed but whose stored
+// results are gone. Nothing is run and nothing moves; the verdict comes from
+// the operator's memory of the earlier run, which is exactly as trustworthy as
+// that memory, so the note matters more here than anywhere else.
+static void mark_results_by_hand() {
+    printf("\n--- Mark results by hand ---\n");
+    printf("Records a verdict WITHOUT running anything. This is for a test that\n"
+           "WAS performed and whose record was lost -- NVS wiped, or a firmware\n"
+           "layout change that discarded the stored blob.\n");
+    printf("It is NOT a way to pass a test that was never run: a marked PASS\n"
+           "reads identically to a real one in the summary, so say in the note\n"
+           "that it was marked by hand and roughly when it was actually run.\n");
+
+    for (;;) {
+        printf("\n");
+        for (int i = 0; i < NUM_TESTS; ++i) {
+            printf("  %d) %-32s [%s]\n", i, records[i].name,
+                   result_str(records[i].result));
+        }
+
+        const int which = ask_int("Which test to mark", 0, NUM_TESTS - 1);
+        ask_result(which);          // same p/f/s prompt and note, and persists
+
+        char again[8];
+        printf("    Mark another? (y/N): ");
+        read_line(again, sizeof again);
+        if (again[0] != 'y' && again[0] != 'Y') break;
+    }
+}
 
 static void print_menu() {
     printf("\n=====================================================\n");
@@ -1768,7 +2138,10 @@ static void print_menu() {
     printf("  i) I2C bus scan (diagnostic)\n");
     printf("  p) center all servos (assembly helper, no verdict)\n");
     printf("  j) jog PWM counts / set a servo center (no verdict)\n");
+    printf("  z) servo repeat-to-zero endurance (%d x %d, no verdict)\n",
+           REPEAT_NUM_BLOCKS, REPEAT_BLOCK_SIZE);
     printf("  s) summary (Markdown, ready to paste)\n");
+    printf("  m) mark results by hand (no test run -- for lost records)\n");
     printf("  r) reset ONE test result\n");
     printf("  c) clear ALL results\n");
     printf("  q) quit\n");
@@ -1839,6 +2212,8 @@ void run_test_session() {
         if (line[0] == 'i') { i2c_scan(); continue; }
         if (line[0] == 'p') { center_all_servos(); continue; }
         if (line[0] == 'j') { jog_servo_pwm(); continue; }
+        if (line[0] == 'z') { diagnostic_servo_repeat_zero(); continue; }
+        if (line[0] == 'm') { mark_results_by_hand(); continue; }
         if (line[0] == 'r') {
             const int which = ask_int("Which test to reset", 0, NUM_TESTS - 1);
             clear_one(which);
@@ -1870,7 +2245,6 @@ void run_test_session() {
             case 6: test_move_to_pwm_skipped();    break;
             case 7: test_spotservo_limits();       break;
             case 8: test_spotservo_protractor();   break;
-            case 9: test_servo_repeat_zero();      break;
         }
     }
 

@@ -23,8 +23,8 @@
 // re-check this if any center_count is re-clocked.
 AngleLimit limit_for(ServoType t) {
     switch (t) {
-        case ServoType::hip:      return { -40.0f, 60.0f };
-        case ServoType::shoulder: return {   -5.0f, 131.0f };
+        case ServoType::hip:      return { -30.0f, 50.0f };
+        case ServoType::shoulder: return { -5.0f, 131.0f };
         case ServoType::knee:     return { 20.0f, 176.0f };
         case ServoType::free:     return {  0.0f, 180.0f };
     }
@@ -68,14 +68,14 @@ SpotCalibration spot_calibration_for(int num) {
         case 2:  return { 297, ServoType::shoulder };
         case 3:  return { 292, ServoType::knee };
         case 4:  return { 325, ServoType::hip };
-        case 5:  return { 309, ServoType::shoulder };
+        case 5:  return { 288, ServoType::shoulder };
         case 6:  return { 300, ServoType::knee };
         case 7:  return { 304, ServoType::hip };
         case 8:  return { 290, ServoType::shoulder };
-        case 9:  return { 316, ServoType::knee };
+        case 9:  return { 312, ServoType::knee };
         case 10: return { 316, ServoType::hip };
         case 11: return { 283, ServoType::shoulder };
-        case 12: return { 317, ServoType::knee };
+        case 12: return { 303, ServoType::knee };
     }
     ESP_LOGI("ERROR MESSAGE", "Failed to construct servo: num %d is invalid.", num);
     exit(1);
