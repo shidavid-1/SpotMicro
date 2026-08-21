@@ -81,6 +81,8 @@ class Servo {
         // were commanded to, rather, the angle that we believe an imaginary needle on a servo points to.
         */
 
+        void write_to_servo_regs(uint8_t MSB, uint8_t LSB);
+
     public:
         // REQUIRES: num is 0-12, port is a valid I2C port.
         // EFFECTS: Constructs an on-robot servo. num is the servo number based

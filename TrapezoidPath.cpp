@@ -1,13 +1,12 @@
 #include "Common.hpp"
 #include <vector>
-#include <cassert>
 #include "esp_log.h"
 
 #include "TrapezoidPath.hpp"
 
 TrapezoidPath::TrapezoidPath(vec<float> origin, float height, float base_width, float prop) 
     : origin(origin), perimeter(0.0f), height(height), base_width(base_width), prop(prop) {
-    assert(prop < 1.0f);
+    TPUP_CHECK(prop < 1.0f, "TRAPEZOID PATH ERROR");
     vec<float> point = {origin.x, origin.y + base_width / 2.0f, origin.z};
     points.push_back(point);
     point = {origin.x, origin.y - base_width / 2.0f, origin.z};
@@ -28,13 +27,14 @@ TrapezoidPath::TrapezoidPath(vec<float> origin, float height, float base_width, 
 }
 
 vec<float> TrapezoidPath::percent_of_path(float percent) const {
-    assert(0.0f <= percent && percent < 1.0f);
 
     float a = lengths.at(0);
     float b = lengths.at(1);
     float c = lengths.at(2);
     float d = lengths.at(3);
     float p = perimeter;
+
+    // Convert percent into a point along the trapezoid
     
     // if in segment a
     if (0 <= percent && percent < a / p) {
@@ -80,5 +80,9 @@ vec<float> TrapezoidPath::percent_of_path(float percent) const {
         ESP_LOGE("TRAPEZOID PATH ERROR", "Invalid percent entered.");
         abort();
     }
+}
+
+float TrapezoidPath::stance_fraction() const {
+    return lengths.at(0) / perimeter;
 }
 

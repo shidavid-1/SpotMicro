@@ -61,6 +61,11 @@ void IMU::calibrate() {
     accel_zero.z = accel.z - gravity;
 }
 
+void IMU::reset_calibration() {
+    angvel_zero = {0.0f, 0.0f, 0.0f};
+    accel_zero = {0.0f, 0.0f, 0.0f};
+}
+
 void IMU::update() {
     i2c_cmd_handle_t ptr;
     uint8_t data[14];

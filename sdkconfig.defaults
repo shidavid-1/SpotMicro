@@ -20,3 +20,8 @@ CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 # here keeps real compiler errors readable. Remove this line when the I2C
 # layer is ported to driver/i2c_master.h.
 CONFIG_I2C_SUPPRESS_DEPRECATE_WARN=y
+
+# Keep assert() active regardless of optimization level. TPUP_CHECK covers the
+# safety-critical conditions on its own, but the remaining plain asserts (and
+# the ones inside ESP-IDF itself) are only useful if they are compiled in.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y

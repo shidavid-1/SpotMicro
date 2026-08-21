@@ -12,11 +12,20 @@
 // the hip limits are the physical limits on theta_1
 // the shoulder limits are the physical limits on theta_3
 // the knee limits are the physical limits on theta_2
+// These limits are per joint TYPE while center_count is per SERVO, so a limit
+// only holds if the WORST-centered servo of that type can reach it. At the old
+// shoulder max 135 servo 8 (center 290) landed at 467 us and at the old knee
+// max 180 servo 9 (center 316) landed at 2534 us, both outside the 500-2500 us
+// window that test_limit_reachability() checks. Pulling those maxima to 131 and
+// 176 puts all twelve inside it and keeps gaits off the extremes, where a servo
+// would be pushing its internal end stop. Hips clear by 250+ us, so they are
+// unchanged. Margins are thin -- servo 8 clears by 7 us and servo 9 by 10 -- so
+// re-check this if any center_count is re-clocked.
 AngleLimit limit_for(ServoType t) {
     switch (t) {
         case ServoType::hip:      return { -40.0f, 60.0f };
-        case ServoType::shoulder: return {   -5.0f, 135.0f };
-        case ServoType::knee:     return { 20.0f, 180.0f };
+        case ServoType::shoulder: return {   -5.0f, 131.0f };
+        case ServoType::knee:     return { 20.0f, 176.0f };
         case ServoType::free:     return {  0.0f, 180.0f };
     }
     __builtin_unreachable();
@@ -73,9 +82,9 @@ SpotCalibration spot_calibration_for(int num) {
 }
 
 void init_pca9685() {
-    write_to_reg(PCA_ADDR, MODE1, 16);
+    write_to_reg(PCA_ADDR, MODE1, 1U << 4);
     write_to_reg(PCA_ADDR, PRE_SCALE, pre_scale);
-    write_to_reg(PCA_ADDR, MODE1, 0);
+    write_to_reg(PCA_ADDR, MODE1, 1U << 5);
 }
 
 //////////////////// SERVO ////////////////////
@@ -119,7 +128,7 @@ Servo::Servo(int num, int led_pos)
         exit(1);
     }
 
-    if (led_pos > 15) {
+    if (led_pos > 15 || led_pos < 0) {
         ESP_LOGI("ERROR MESSAGE", "Failed to construct servo num %d because LED_pos \"%d\" is invalid.", servo_num, led_pos);
         exit(1);
     }
@@ -153,30 +162,37 @@ void Servo::move_to_angle(float angle) {
 
 // NOTE: This applies NO calibration information
 void Servo::move_to_pwm(int numCounts) {
-    uint8_t LED_ON_L  = 6 + 4 * led_pos;
-    uint8_t LED_ON_H  = LED_ON_L + 1;
-    uint8_t LED_OFF_L = LED_ON_L + 2;
-    uint8_t LED_OFF_H = LED_ON_L + 3;
     uint8_t countMSBs = 0;
     uint8_t countLSBs = 0;
 
     if (numCounts > 4095 || numCounts < 0) {
         ESP_LOGI("ERROR MESSAGE", "Number of counts: %d, not in allowable range", numCounts);
+        return; // don't change position
     }
     else {
         countMSBs = numCounts >> 8;
         countLSBs = numCounts;
     }
 
-    // Write to each of the four registers
-    if (write_to_reg(PCA_ADDR, LED_ON_H, 0) != ESP_OK)
-        ESP_LOGI("ERROR MESSAGE", "Servo %d is unable to write to register %s.", led_pos, "LED_ON_H");
-    if (write_to_reg(PCA_ADDR, LED_ON_L, 0) != ESP_OK)
-        ESP_LOGI("ERROR MESSAGE", "Servo %d is unable to write to register %s.", led_pos, "LED_ON_L");
-    if (write_to_reg(PCA_ADDR, LED_OFF_H, countMSBs) != ESP_OK)
-        ESP_LOGI("ERROR MESSAGE", "Servo %d is unable to write to register %s.", led_pos, "LED_OFF_H");
-    if (write_to_reg(PCA_ADDR, LED_OFF_L, countLSBs) != ESP_OK)
-        ESP_LOGI("ERROR MESSAGE", "Servo %d is unable to write to register %s.", led_pos, "LED_OFF_L");
+    write_to_servo_regs(countMSBs, countLSBs);
+}
+
+void Servo::write_to_servo_regs(uint8_t MSB, uint8_t LSB) {    
+    uint8_t LED_ON_L  = 6 + 4 * led_pos;
+    
+    i2c_cmd_handle_t ptr = i2c_cmd_link_create();
+    i2c_master_start(ptr);
+    i2c_master_write_byte(ptr, (PCA_ADDR << 1), true);
+    i2c_master_write_byte(ptr, LED_ON_L, true);
+    i2c_master_write_byte(ptr, 0U, true);
+    i2c_master_write_byte(ptr, 0U, true);
+    i2c_master_write_byte(ptr, LSB, true);
+    i2c_master_write_byte(ptr, MSB, true);
+    i2c_master_stop(ptr);
+    if (i2c_master_cmd_begin(i2c_port, ptr, pdMS_TO_TICKS(50)) != ESP_OK) {
+        ESP_LOGE("SERVO", "Servo at channel %d is unable to write to registers.", led_pos);
+    }
+    i2c_cmd_link_delete(ptr);
 }
 
 //////////////////// SPOT SERVO ////////////////////
@@ -205,6 +221,11 @@ void SpotServo::move_to_angle(float angle) {
     // full 0-180 travel, so it never trips this).
     AngleLimit lim = limit_for(type);
     if (angle < lim.min || angle > lim.max) {
+        // Clamping means the foot will not land where the planner put it.
+        // Folded silently, that reads like a controls bug later.
+        ESP_LOGW("SERVO", "Servo %d clamped: %.1f -> %.1f deg",
+                 get_servo_num(), (double)angle,
+                 (double)(angle < lim.min ? lim.min : lim.max));
         if (angle < lim.min) {
             angle = lim.min;
         }

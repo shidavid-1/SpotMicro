@@ -8,6 +8,8 @@
 #define UNIVERSAL_CONSTANTS_STRUCTS_HPP
 
 #include "driver/i2c.h"
+#include "esp_log.h"
+#include <cstdlib>
 
 // Constants //
 constexpr float control_frequency = 80; // Hz
@@ -54,6 +56,15 @@ struct legQuad {
     T backLeft;
     T backRight;
 };
+
+// Macros //
+
+// EFFECTS: If cond is false, logs the failed condition with its file and line
+// under "tag" and aborts. Unlike assert(), this is not removed by NDEBUG or by
+// the ESP-IDF assertion-level setting, so it is the right check for a condition
+// that must hold before the servos are commanded. Use plain assert() for
+// checks that are only there to catch programmer error during bring-up.
+#define TPUP_CHECK(cond, tag)                                                      do {                                                                               if (!(cond)) {                                                                     ESP_LOGE((tag), "Check failed: %s (%s:%d)",                                             #cond, __FILE__, __LINE__);                                           abort();                                                                   }                                                                          } while (0)
 
 // Functions //
 

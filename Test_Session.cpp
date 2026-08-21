@@ -21,7 +21,7 @@ constexpr AngularRange DEFAULT_ANG_RANGE = AngularRange::plus_minus_500dps;
 constexpr AccelRange   DEFAULT_ACC_RANGE = AccelRange::plus_minus_4g;
 
 // Acceptance criteria, taken from the test plan.
-constexpr float SERVO_ANGLE_TOL = 1.0f;   // deg, Servo::move_to_angle
+constexpr float SERVO_ANGLE_TOL = 2.0f;   // deg, Servo::move_to_angle (+/- 2 deg)
 // No angular tolerance for the SpotServo limit test: the criterion is now
 // physical (no contact at a bound, no motion past one), not "within N degrees
 // of the bound".
@@ -46,6 +46,14 @@ constexpr float REST_ACCEL_TOL = 0.5f;    // m/s^2
 // matches the document. Change this line if it was a typo.
 constexpr float SWEEP_ANGLES[] = { 0.0f, 45.0f, 90.0f, 145.0f, 180.0f };
 constexpr int   NUM_SWEEP_ANGLES = sizeof(SWEEP_ANGLES) / sizeof(SWEEP_ANGLES[0]);
+
+// Repeat-to-zero endurance test: 300 commands to 0 degrees, split into three
+// blocks so a wiring or mounting change can be made between them and the
+// behavior compared block to block.
+constexpr int REPEAT_BLOCK_SIZE   = 100;
+constexpr int REPEAT_NUM_BLOCKS   = 3;
+constexpr int REPEAT_DELAY_MS     = 100;  // between consecutive commands
+constexpr int REPEAT_PROGRESS_EVERY = 10; // print a progress line this often
 
 
 //////////////////// CONSOLE HELPERS ////////////////////
@@ -125,6 +133,55 @@ static bool ask_float(const char *prompt, float *out) {
 }
 
 
+// Key codes returned by read_key(). A printable key comes back as its own
+// character code; the arrow keys arrive as multi-byte escape sequences, so
+// they are folded into these values, chosen to sit above the byte range.
+enum {
+    KEY_UP = 256, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ESC
+};
+
+// EFFECTS: Reads one character, giving up after timeout_ms. Returns -1 if
+// nothing arrived in time.
+static int read_char_timeout(int timeout_ms) {
+    for (int waited = 0; waited <= timeout_ms; waited += 10) {
+        const int c = fgetc(stdin);
+        if (c != EOF) return c;
+        clearerr(stdin);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return -1;
+}
+
+// EFFECTS: Blocks until a key is pressed, then returns its character code or
+// one of the KEY_* values above. Yields to the scheduler between polls so the
+// idle task still runs.
+// NOTE: An arrow key is not one byte -- the terminal sends "ESC [ C" (or
+// "ESC O C" when it is in application cursor mode). The bytes after the ESC
+// are already in flight, so a short wait tells a real arrow apart from a bare
+// ESC press: a timeout means the ESC stood alone.
+static int read_key() {
+    for (;;) {
+        const int c = fgetc(stdin);
+        if (c == EOF) {
+            clearerr(stdin);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (c != 0x1B) return c;
+
+        const int second = read_char_timeout(60);
+        if (second != '[' && second != 'O') return KEY_ESC;
+        switch (read_char_timeout(60)) {
+            case 'A': return KEY_UP;
+            case 'B': return KEY_DOWN;
+            case 'C': return KEY_RIGHT;
+            case 'D': return KEY_LEFT;
+            default:  return KEY_ESC;
+        }
+    }
+}
+
+
 //////////////////// RESULT RECORDING ////////////////////
 
 enum class Result { not_run, pass, fail, skip };
@@ -146,6 +203,7 @@ static TestRecord records[] = {
     { "Servo::move_to_pwm (scoped)",       Result::not_run, "" },  // 6
     { "SpotServo #1: limit saturation",    Result::not_run, "" },  // 7
     { "SpotServo #2: protractor angles",   Result::not_run, "" },  // 8
+    { "Servo repeat-to-zero (3 x 100)",    Result::not_run, "" },  // 9
 };
 constexpr int NUM_TESTS = sizeof(records) / sizeof(records[0]);
 
@@ -190,7 +248,7 @@ static const char *NVS_KEY       = "results";
 
 // Bump when the layout of PersistedRecord or the test list changes, so stale
 // blobs from an older firmware are discarded rather than misread.
-constexpr uint8_t PERSIST_VERSION = 1;
+constexpr uint8_t PERSIST_VERSION = 2;
 
 struct PersistedBlob {
     uint8_t version;
@@ -283,6 +341,174 @@ static void clear_all() {
     }
     save_results();
     printf("  All results cleared.\n");
+}
+
+
+//////////////////// CENTER COUNT OVERRIDES ////////////////////
+
+// A SpotServo's center count is compiled in, in spot_calibration_for()
+// (Servo.cpp). Finding a center by hand means trying counts until the horn
+// sits right, which is no use if every attempt needs a rebuild -- so the
+// session keeps its own override table in NVS, and every center this file
+// reads comes from effective_center() rather than straight from the servo.
+//
+// The override is SESSION-LOCAL: nothing outside this file sees it, so
+// SpotServo::move_to_angle still does its math around the compiled center. A
+// center that is settled on only becomes real once it is pasted back into
+// spot_calibration_for(); the jog tool's 't' key prints that block ready to go.
+
+constexpr int     NUM_SERVO_NUMS = 13;   // servo numbers 0-12
+constexpr int16_t NO_OVERRIDE    = -1;
+
+static const char *NVS_KEY_CENTERS = "centers";
+
+// Bump when the layout of CenterBlob changes, so stale blobs from an older
+// firmware are discarded rather than misread.
+constexpr uint8_t CENTERS_VERSION = 1;
+
+struct CenterBlob {
+    uint8_t version;
+    uint8_t count;
+    int16_t center[NUM_SERVO_NUMS];
+};
+
+// EFFECTS: Fills `table` from the centers saved by a previous session, if the
+// stored blob matches this firmware's layout. Returns how many overrides were
+// restored, leaving `table` untouched when there is nothing to restore.
+static int load_centers_into(int16_t *table) {
+    nvs_ready();
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return 0;
+
+    CenterBlob blob = {};
+    size_t len = sizeof blob;
+    const esp_err_t err = nvs_get_blob(h, NVS_KEY_CENTERS, &blob, &len);
+    nvs_close(h);
+
+    if (err != ESP_OK || len != sizeof blob) return 0;
+    if (blob.version != CENTERS_VERSION || blob.count != NUM_SERVO_NUMS) {
+        printf("  (stored centers are from a different firmware layout; ignored)\n");
+        return 0;
+    }
+
+    int restored = 0;
+    for (int i = 0; i < NUM_SERVO_NUMS; ++i) {
+        table[i] = blob.center[i];
+        if (table[i] != NO_OVERRIDE) ++restored;
+    }
+    return restored;
+}
+
+// EFFECTS: Returns the override table, loading it from NVS on first use. An
+// entry of NO_OVERRIDE means "use the compiled-in center".
+static int16_t *centers() {
+    static int16_t table[NUM_SERVO_NUMS];
+    static bool    loaded = false;
+    if (!loaded) {
+        for (int i = 0; i < NUM_SERVO_NUMS; ++i) table[i] = NO_OVERRIDE;
+        // Set before the read, not after: a failed read leaves an empty table,
+        // and retrying it on every lookup would hammer NVS.
+        loaded = true;
+        load_centers_into(table);
+    }
+    return table;
+}
+
+// EFFECTS: Writes the override table to NVS.
+static void save_centers() {
+    nvs_ready();
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+
+    CenterBlob blob = {};
+    blob.version = CENTERS_VERSION;
+    blob.count   = NUM_SERVO_NUMS;
+    for (int i = 0; i < NUM_SERVO_NUMS; ++i) blob.center[i] = centers()[i];
+
+    nvs_set_blob(h, NVS_KEY_CENTERS, &blob, sizeof blob);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// REQUIRES: num is 0-12.
+// EFFECTS: Returns the center count this session uses for servo `num`: its
+// override if one is set, otherwise the value compiled into Servo.cpp.
+static int effective_center(int num) {
+    if (num >= 0 && num < NUM_SERVO_NUMS && centers()[num] != NO_OVERRIDE) {
+        return centers()[num];
+    }
+    return spot_calibration_for(num).center_count;
+}
+
+// REQUIRES: num is 0-12.
+// EFFECTS: Returns true if servo `num`'s center has been overridden here.
+static bool center_is_overridden(int num) {
+    return num >= 0 && num < NUM_SERVO_NUMS && centers()[num] != NO_OVERRIDE;
+}
+
+// REQUIRES: num is 0-12, count is a legal 12-bit count.
+// EFFECTS: Records `count` as servo `num`'s center for this session and
+// persists it.
+static void set_center_override(int num, int count) {
+    centers()[num] = (int16_t)count;
+    save_centers();
+}
+
+// REQUIRES: num is 0-12.
+// EFFECTS: Drops servo `num`'s override, so the compiled-in center applies
+// again.
+static void clear_center_override(int num) {
+    centers()[num] = NO_OVERRIDE;
+    save_centers();
+}
+
+// EFFECTS: Returns the enum spelling of `t`. Distinct from type_name(), which
+// is worded for a human reading the console; this one has to compile.
+static const char *type_enum_name(ServoType t) {
+    switch (t) {
+        case ServoType::hip:      return "ServoType::hip";
+        case ServoType::shoulder: return "ServoType::shoulder";
+        case ServoType::knee:     return "ServoType::knee";
+        case ServoType::free:     return "ServoType::free";
+    }
+    return "ServoType::free";
+}
+
+// EFFECTS: Prints the body of spot_calibration_for() with this session's
+// centers filled in, ready to paste into Servo.cpp. Overridden lines carry the
+// compiled value they replace, so a change can be read back or undone by eye.
+static void print_center_table() {
+    printf("\n\n----- paste over the body of spot_calibration_for() in Servo.cpp -----\n\n");
+    for (int n = 0; n < NUM_SERVO_NUMS; ++n) {
+        const SpotCalibration c      = spot_calibration_for(n);
+        const int             center = effective_center(n);
+
+        char note[64] = "";
+        if (center != c.center_count) {
+            snprintf(note, sizeof note, "   // was %d", c.center_count);
+        }
+        else if (n == 0) {
+            snprintf(note, sizeof note, "   // no meaningful center");
+        }
+        printf("        case %-2d: return { %4d, %-20s };%s\n",
+               n, center, type_enum_name(c.type), note);
+    }
+    printf("\n----- end -----\n");
+    printf("Until this is pasted in, the centers above live only in this\n"
+           "session's NVS: SpotServo::move_to_angle still uses the compiled ones.\n");
+}
+
+// EFFECTS: Notes at startup that an earlier session left centers overridden,
+// since every later printout of a center silently reflects them.
+static void report_center_overrides() {
+    int n = 0;
+    for (int i = 0; i < NUM_SERVO_NUMS; ++i) {
+        if (center_is_overridden(i)) ++n;
+    }
+    if (n > 0) {
+        printf("  %d servo center(s) overridden by an earlier jog session "
+               "(menu 'j' to review).\n", n);
+    }
 }
 
 
@@ -558,6 +784,11 @@ static void test_imu_calibrate() {
     wait_for_enter("Place the IMU LEVEL and STILL (calibrating on a slope "
                    "bakes that tilt in permanently)");
 
+    // Clear any zeros left over from an earlier run of this test. calibrate()
+    // captures the ALREADY zero-subtracted readings, so without this the old
+    // offsets compound and "before" would show a bias that is not the raw one.
+    imu_instance().reset_calibration();
+
     vec<float> a_before, g_before;
     average_reading(imu_instance(), 20, 20, &a_before, &g_before);
     printf("\n      before: accel %7.2f %7.2f %7.2f   angvel %8.2f %8.2f %8.2f\n",
@@ -654,24 +885,19 @@ static void test_imu_update_six_face() {
 }
 
 
-// T5: Servo::move_to_angle. Off robot, single servo, needle attached.
-static void test_servo_move_to_angle() {
-    printf("\n--- Servo::move_to_angle sweep ---\n");
-    printf("Desired behavior: move the servo to the desired angle.\n");
-    printf("\nSETUP: OFF the robot, single servo, long needle axially locked to\n"
-           "the axle, protractor beneath. Assumes slope and offset are already\n"
-           "correct for this servo.\n");
-    printf("Acceptance: needle within +/- %.0f degree of each commanded angle.\n",
-           (double)SERVO_ANGLE_TOL);
-
+// EFFECTS: Asks which servo to drive and resolves its PCA9685 channel,
+// bringing the PCA up along the way. Shared by the tests that command a
+// single bench servo directly.
+//
+// Servo 0's led_pos would be num - 1 = -1, and move_to_pwm computes
+// LED_ON_L = 6 + 4 * led_pos = 2 -- which is SUBADR1, not a PWM channel.
+// Commanding it would scribble over the PCA9685's addressing registers
+// instead of moving anything, so ask which channel it is actually wired to
+// and let the caller use the explicit-led_pos constructor.
+static void ask_servo_and_channel(int *num_out, int *led_pos_out) {
     const int num = ask_int("Servo number (0 = uncalibrated identity)", 0, 12);
     ensure_pca_ready();
 
-    // Servo 0's led_pos would be num - 1 = -1, and move_to_pwm computes
-    // LED_ON_L = 6 + 4 * led_pos = 2 -- which is SUBADR1, not a PWM channel.
-    // Commanding it would scribble over the PCA9685's addressing registers
-    // instead of moving anything, so ask which channel it is actually wired
-    // to and use the explicit-led_pos constructor.
     int led_pos = num - 1;
     if (num == 0) {
         printf("\n    Servo 0 has no implied channel (led_pos would be -1, which\n"
@@ -679,8 +905,26 @@ static void test_servo_move_to_angle() {
                "    output). Specify the channel it is plugged into.\n");
         led_pos = ask_int("PCA9685 channel", 0, 15);
     }
-    Servo servo(num, led_pos);
     printf("    Using PCA9685 channel %d\n", led_pos);
+
+    *num_out     = num;
+    *led_pos_out = led_pos;
+}
+
+
+// T5: Servo::move_to_angle. Off robot, single servo, needle attached.
+static void test_servo_move_to_angle() {
+    printf("\n--- Servo::move_to_angle sweep ---\n");
+    printf("Desired behavior: move the servo to the desired angle.\n");
+    printf("\nSETUP: OFF the robot, single servo, long needle axially locked to\n"
+           "the axle, protractor beneath. Assumes slope and offset are already\n"
+           "correct for this servo.\n");
+    printf("Acceptance: needle within +/- %.0f degrees of each commanded angle.\n",
+           (double)SERVO_ANGLE_TOL);
+
+    int num = 0, led_pos = 0;
+    ask_servo_and_channel(&num, &led_pos);
+    Servo servo(num, led_pos);
 
     const Calibration cal = calibration_for(num);
     printf("    Servo %d: slope %.3f, offset %+.2f\n",
@@ -710,7 +954,7 @@ static void test_servo_move_to_angle() {
         vTaskDelay(pdMS_TO_TICKS(600));
     }
 
-    printf("\n    PASS if every reading was within +/- %.0f degree on the\n"
+    printf("\n    PASS if every reading was within +/- %.0f degrees on the\n"
            "    ascending pass. Record the descending numbers even if you do\n"
            "    not gate on them.\n", (double)SERVO_ANGLE_TOL);
     ask_result(5);
@@ -808,9 +1052,9 @@ static void print_spot_servo_math(const SpotServo &joint, float requested) {
     printf("      | FINAL pulse width  = %8.1f us\n", (double)final_width);
 
     if (m.count_out_of_range) {
-        printf("      | !! OUT OF COUNT RANGE. move_to_pwm logs an error and then\n");
-        printf("      |    writes 0 to both count registers, so the servo is\n");
-        printf("      |    commanded to count 0 (~0 us), not left where it was.\n");
+        printf("      | !! OUT OF COUNT RANGE. move_to_pwm logs an error and\n");
+        printf("      |    returns WITHOUT writing, so the servo holds its\n");
+        printf("      |    last position -- the command is dropped, not obeyed.\n");
     }
     else if (m.pulse_unusable) {
         printf("      | !! PULSE OUTSIDE SERVO RANGE (%.0f-%.0f us).\n",
@@ -917,9 +1161,10 @@ static void prepare_safe_pose(int under_test, ServoType test_type) {
             // Commanded by count rather than angle: the angle-to-count math
             // is the thing under test, so the parked position should not
             // depend on it.
-            s.move_to_pwm(s.get_center_count());
-            printf("      servo %2d (%-8s): center count %d\n",
-                   n, type_name(s.get_type()), s.get_center_count());
+            s.move_to_pwm(effective_center(n));
+            printf("      servo %2d (%-8s): center count %d%s\n",
+                   n, type_name(s.get_type()), effective_center(n),
+                   center_is_overridden(n) ? " (session override)" : "");
         }
         else {
             s.move_to_angle(t.angle);
@@ -932,6 +1177,278 @@ static void prepare_safe_pose(int under_test, ServoType test_type) {
 
     printf("     Pose set.\n");
     vTaskDelay(pdMS_TO_TICKS(400));
+}
+
+
+// EFFECTS: Drives every on-robot servo to its stored center count. Commanded
+// by COUNT rather than by angle, so the pose does not depend on the
+// angle-to-count math that the servo tests exist to check. Servo 0 is skipped:
+// it is the reserved uncalibrated servo, and its center count of 0 is a
+// placeholder rather than a position.
+//
+// For ASSEMBLY, not for testing: nothing is judged and no verdict is recorded.
+// Horns have to go on with the servo at center, or the joint's usable travel
+// ends up offset from its declared limits. Run this, then mount the horns.
+static void center_all_servos() {
+    printf("\n--- Center all servos ---\n");
+    printf("Sets servos 1-12 to their center PWM counts, including any center\n"
+           "set with the jog tool. Assembly helper, not a test: no verdict is\n"
+           "recorded. Mount the horns after this runs, not before.\n");
+    printf("\nSAFETY: body on a stand, legs clear, bench supply current-limited.\n");
+    printf("ALL TWELVE joints are about to move, and any joint sitting far from\n"
+           "center will snap to it. Keep hands clear and give the legs room to\n"
+           "swing.\n");
+
+    char confirm[8];
+    printf("  Center all twelve servos now? (y/N): ");
+    read_line(confirm, sizeof confirm);
+    if (confirm[0] != 'y' && confirm[0] != 'Y') {
+        printf("  Cancelled.\n");
+        return;
+    }
+
+    ensure_pca_ready();
+
+    for (int n = 1; n <= 12; ++n) {
+        SpotServo s(n);
+        s.move_to_pwm(effective_center(n));
+        printf("      servo %2d (%-8s): center count %d%s\n",
+               n, type_name(s.get_type()), effective_center(n),
+               center_is_overridden(n) ? " (session override)" : "");
+        // Stagger so twelve servos do not all draw stall current at once.
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
+
+    printf("     All twelve servos centered.\n");
+}
+
+
+//////////////////// PWM JOG / SET CENTER ////////////////////
+
+// EFFECTS: Returns the pulse width, in microseconds, that `counts` produces.
+// Inverse of count_for_us(); both follow the count math in
+// Servo::move_to_angle, where a pulse of n counts is (n + 1) ticks long.
+static float us_for_count(int counts) {
+    return (float)(counts + 1) / 4096.0f * (float)period;
+}
+
+// EFFECTS: Returns the count whose pulse comes closest to `us`.
+static int count_for_us(float us) {
+    return (int)std::lround((double)us / period * 4096.0 - 1.0);
+}
+
+// Jogging is unclamped by design -- it commands raw counts, so none of the
+// joint limits apply -- but it still stays inside the pulse window a hobby
+// servo answers to at all. Past either edge the servo either ignores the pulse
+// or grinds against its internal stop, and neither is worth walking into one
+// keypress at a time.
+static int jog_min_count() { return count_for_us(SERVO_MIN_PULSE_US); }
+static int jog_max_count() { return count_for_us(SERVO_MAX_PULSE_US); }
+
+// EFFECTS: Returns `count` brought inside the jog window.
+static int clamp_jog_count(int count) {
+    if (count < jog_min_count()) return jog_min_count();
+    if (count > jog_max_count()) return jog_max_count();
+    return count;
+}
+
+// EFFECTS: Asks which servo to jog, writing it to *out. Returns false on a
+// blank line or 'q', meaning "back to the menu": ask_int() re-asks until it
+// gets a number, and a tool entered by accident needs a way out.
+static bool ask_jog_servo(int *out) {
+    char line[16];
+    for (;;) {
+        printf("    Servo number [0-12], 0 = uncalibrated bench servo "
+               "(blank or q to go back): ");
+        read_line(line, sizeof line);
+        if (line[0] == '\0' || line[0] == 'q' || line[0] == 'Q') return false;
+
+        char *end = NULL;
+        const long v = strtol(line, &end, 10);
+        if (end != line && v >= 0 && v <= 12) {
+            *out = (int)v;
+            return true;
+        }
+        printf("    ! Not a number in range.\n");
+    }
+}
+
+// EFFECTS: Rewrites the jog readout in place, on the line the cursor is
+// already on, so holding an arrow key down does not scroll the screen.
+static void print_jog_status(int num, int count) {
+    const int center = effective_center(num);
+    printf("\r    servo %2d | count %4d | %6.1f us | center %4d | offset %+5d %-12s ",
+           num, count, (double)us_for_count(count), center, count - center,
+           center_is_overridden(num) ? "[override]" : "");
+    fflush(stdout);
+}
+
+// EFFECTS: Steps one servo's pulse width a count at a time from the keyboard,
+// and records the count it looks right at as that servo's center.
+//
+// Counts go out through Servo::move_to_pwm, NOT SpotServo: no calibration, no
+// angle math, no limit clamp, so the servo lands exactly where the count says
+// and what is on screen is what the PCA9685 was handed. A center set here is
+// stored in this session's NVS only -- 't' prints it as source to paste into
+// spot_calibration_for(), which is what makes it real.
+//
+// Calibration and assembly helper, not a test: nothing is judged and no
+// verdict is recorded.
+static void jog_servo_pwm() {
+    printf("\n--- Jog PWM counts / set a servo center ---\n");
+    printf("Walks one servo's pulse width one count at a time and lets the\n"
+           "count you settle on be recorded as that servo's center. No verdict\n"
+           "is recorded.\n");
+    printf("\nSAFETY: body on a stand, the joint clear, supply current-limited.\n"
+           "Counts are commanded RAW -- no joint limits apply here -- so a long\n"
+           "walk in one direction can push a joint into a mechanical stop.\n"
+           "Move in small steps and listen for buzzing.\n");
+    printf("\nKEYS:\n");
+    printf("  right arrow  /  .     +1 count       left arrow  /  ,     -1 count\n");
+    printf("  up arrow     /  >    +10 counts      down arrow  /  <    -10 counts\n");
+    printf("  =  jump to a count you type          r  back to the stored center\n");
+    printf("  c  set THIS servo's center to the count on screen\n");
+    printf("  x  drop this servo's override        t  print the paste-ready table\n");
+    printf("  n  switch to another servo           q / Esc  back to the menu\n");
+    printf("\nIf the arrow keys do nothing, the terminal is eating them: use the\n"
+           ". and , keys, which do the same thing.\n");
+    printf("The jog window is %.0f-%.0f us (counts %d-%d).\n",
+           (double)SERVO_MIN_PULSE_US, (double)SERVO_MAX_PULSE_US,
+           jog_min_count(), jog_max_count());
+
+    ensure_pca_ready();
+
+    for (;;) {
+        printf("\n");
+        int num = 0;
+        if (!ask_jog_servo(&num)) return;
+
+        // Servo 0's led_pos would be num - 1 = -1, and move_to_pwm computes
+        // LED_ON_L = 6 + 4 * led_pos = 2 -- which is SUBADR1, not a PWM
+        // channel. Commanding it would scribble over the PCA9685's addressing
+        // registers instead of moving anything, so ask which channel it is
+        // actually wired to and use the explicit-led_pos constructor.
+        int led_pos = num - 1;
+        if (num == 0) {
+            printf("\n    Servo 0 has no implied channel (led_pos would be -1, which\n"
+                   "    maps onto the PCA9685 config registers rather than a PWM\n"
+                   "    output). Specify the channel it is plugged into.\n");
+            led_pos = ask_int("PCA9685 channel", 0, 15);
+        }
+        Servo servo(num, led_pos);
+
+        int count = effective_center(num);
+        if (count < jog_min_count() || count > jog_max_count()) {
+            // Servo 0's center is a placeholder 0, which is not a pulse any
+            // servo answers to. Start from mid-travel rather than throwing the
+            // horn at an end stop on the first command.
+            count = count_for_us(1500.0f);
+            printf("    Servo %d has no usable center (%d counts); starting at\n"
+                   "    mid-travel, %d counts.\n", num, effective_center(num), count);
+        }
+
+        printf("    Channel %d. About to command count %d (%.0f us) -- the joint\n"
+               "    will snap there if it is sitting somewhere else.\n",
+               led_pos, count, (double)us_for_count(count));
+        wait_for_enter("Clear of the joint");
+
+        servo.move_to_pwm(count);
+
+        // wait_for_enter's read_line stops on the '\r' of a CRLF and leaves the
+        // '\n' behind. Left in the buffer it would read as a keypress the
+        // moment the jog loop starts.
+        drain_input();
+        print_jog_status(num, count);
+
+        bool another_servo = false;
+        while (!another_servo) {
+            const int key = read_key();
+
+            int step = 0;
+            switch (key) {
+                case KEY_RIGHT: case '.': step =  +1; break;
+                case KEY_LEFT:  case ',': step =  -1; break;
+                case KEY_UP:    case '>': step = +10; break;
+                case KEY_DOWN:  case '<': step = -10; break;
+                default: break;
+            }
+
+            if (step != 0) {
+                const int next = clamp_jog_count(count + step);
+                if (next == count) {
+                    printf("\n    ! At the %s of the jog window (%.0f-%.0f us);"
+                           " not going further.\n",
+                           step > 0 ? "top" : "bottom",
+                           (double)SERVO_MIN_PULSE_US, (double)SERVO_MAX_PULSE_US);
+                }
+                else {
+                    count = next;
+                    servo.move_to_pwm(count);
+                }
+                print_jog_status(num, count);
+                continue;
+            }
+
+            switch (key) {
+                case '=': {
+                    printf("\n");
+                    count = ask_int("Count", jog_min_count(), jog_max_count());
+                    servo.move_to_pwm(count);
+                    drain_input();
+                    break;
+                }
+                case 'r': case 'R': {
+                    const int center = effective_center(num);
+                    if (center < jog_min_count() || center > jog_max_count()) {
+                        printf("\n    ! Servo %d has no usable stored center (%d counts);"
+                               " staying put.\n", num, center);
+                        break;
+                    }
+                    count = center;
+                    servo.move_to_pwm(count);
+                    printf("\n    Returned to the stored center, %d counts.\n", count);
+                    break;
+                }
+                case 'c': case 'C':
+                    set_center_override(num, count);
+                    printf("\n    Center for servo %d is now %d counts (%.0f us).\n",
+                           num, count, (double)us_for_count(count));
+                    printf("    Saved in this session's NVS, so it survives a reboot and\n"
+                           "    is what 'p' (center all servos) will use -- but\n"
+                           "    SpotServo::move_to_angle still works off the center\n"
+                           "    compiled into Servo.cpp. Press 't' for the block to paste.\n");
+                    break;
+                case 'x': case 'X':
+                    if (!center_is_overridden(num)) {
+                        printf("\n    Servo %d has no override to drop.\n", num);
+                        break;
+                    }
+                    clear_center_override(num);
+                    printf("\n    Override dropped; servo %d is back to its compiled\n"
+                           "    center of %d counts.\n", num, effective_center(num));
+                    break;
+                case 't': case 'T':
+                    print_center_table();
+                    break;
+                case 'n': case 'N':
+                    another_servo = true;
+                    continue;
+                case 'q': case 'Q': case KEY_ESC:
+                    printf("\n    Leaving servo %d at count %d (%.0f us).\n",
+                           num, count, (double)us_for_count(count));
+                    return;
+                case '\r': case '\n':
+                    // Stray line ending from a prompt; not a command.
+                    continue;
+                default:
+                    printf("\n    ! Unknown key. Arrows or . , > < to move,"
+                           " c to set center, q to quit.\n");
+                    break;
+            }
+
+            print_jog_status(num, count);
+        }
+    }
 }
 
 
@@ -1003,10 +1520,10 @@ static void test_spotservo_limits() {
             const SpotMath m = compute_spot_math(joint, commands[k]);
 
             // Refuse to send a command the hardware cannot act on. Sending it
-            // anyway would either write 0 counts (out-of-range path in
-            // move_to_pwm) or emit a pulse the servo ignores -- both of which
-            // read as "the clamp failed" when the real problem is that this
-            // joint's limit is not physically reachable.
+            // anyway would either be dropped by move_to_pwm's out-of-range
+            // guard or emit a pulse the servo ignores -- either way the joint
+            // does not move, which reads as "the clamp failed" when the real
+            // problem is that this joint's limit is not physically reachable.
             if (m.count_out_of_range || m.pulse_unusable) {
                 printf("      -> NOT COMMANDED. Servo %d at %.1f deg maps to count %d\n",
                        num, (double)m.effective, m.final_count);
@@ -1057,23 +1574,17 @@ static void test_spotservo_limits() {
 }
 
 
-// T8: SpotServo validation #2 -- paper protractor at three angles per joint.
-static void test_spotservo_protractor() {
-    printf("\n--- SpotServo #2: protractor angles ---\n");
-    printf("Desired behavior: the joint moves to the commanded angle in the\n"
-           "Spot's frame of reference.\n");
-    printf("\nMethod: paper protractor cut for one angle below center, center,\n"
-           "and one above, taped at the joint and eyeballed. Joint slop makes\n"
-           "anything finer meaningless -- what you are really checking is\n"
-           "DIRECTION and rough magnitude.\n");
-    printf("SAFETY: body on a stand, legs clear.\n");
-
-    const int num = ask_int("Servo number", 1, 12);
-    ensure_pca_ready();
+// EFFECTS: Runs the protractor check on one joint: reports its limits and the
+// angle that maps to its center count, then commands whatever angles the
+// operator types until they enter a blank line. Records nothing -- the single
+// verdict for the whole test is taken by the caller, since the operator is
+// judging one property (does the joint move the way the convention says) and
+// it either holds across the joints they looked at or it does not.
+static void protractor_one_joint(int num) {
     SpotServo joint(num);
 
     const AngleLimit lim = limit_for(joint.get_type());
-    printf("\n    Servo %d: type %s, limits [%.0f, %.0f], center count %d\n",
+    printf("\n  == Servo %d (%s), limits [%.0f, %.0f], center count %d ==\n",
            num, type_name(joint.get_type()),
            (double)lim.min, (double)lim.max, joint.get_center_count());
 
@@ -1107,13 +1618,141 @@ static void test_spotservo_protractor() {
         printf("      commanded %.1f deg -> check the protractor\n", (double)angle);
         vTaskDelay(pdMS_TO_TICKS(600));
     }
+}
+
+
+// T8: SpotServo validation #2 -- paper protractor at three angles per joint.
+static void test_spotservo_protractor() {
+    printf("\n--- SpotServo #2: protractor angles ---\n");
+    printf("Desired behavior: the joint moves to the commanded angle in the\n"
+           "Spot's frame of reference.\n");
+    printf("\nMethod: paper protractor cut for one angle below center, center,\n"
+           "and one above, taped at the joint and eyeballed. Joint slop makes\n"
+           "anything finer meaningless -- what you are really checking is\n"
+           "DIRECTION and rough magnitude.\n");
+    printf("SAFETY: body on a stand, legs clear.\n");
+    printf("Blank line at the angle prompt finishes a joint; walking all\n"
+           "twelve then moves on to the next one.\n");
+
+    const int choice = ask_int("Servo number (0 = walk all twelve)", 0, 12);
+    ensure_pca_ready();
+
+    const int first = (choice == 0) ? 1  : choice;
+    const int last  = (choice == 0) ? 12 : choice;
+
+    for (int num = first; num <= last; ++num) {
+        // Walking all twelve means the protractor has to be moved and
+        // re-taped between joints, so pause rather than commanding a joint
+        // nobody is looking at yet.
+        if (choice == 0) {
+            char prompt[64];
+            snprintf(prompt, sizeof prompt, "Protractor taped to servo %d", num);
+            wait_for_enter(prompt);
+        }
+        protractor_one_joint(num);
+    }
 
     printf("\n    PASS if the joint moved in the DIRECTION the convention says\n"
            "    it should and landed roughly where the paper says. A joint\n"
            "    that moves the wrong way is a sign error, not a calibration\n"
            "    error -- note which joint, since the left/right pairs use\n"
            "    mirrored formulas.\n");
+    if (choice == 0) {
+        printf("    One verdict covers all twelve: FAIL it if ANY joint was\n"
+               "    wrong, and name that joint in the note.\n");
+    }
     ask_result(8);
+}
+
+
+// T9: repeat-to-zero endurance. Commands one servo to 0 degrees
+// REPEAT_BLOCK_SIZE times per block, REPEAT_NUM_BLOCKS blocks, 300 commands
+// in total. The point is not the angle -- it is what changes BETWEEN blocks:
+// the operator describes the change (reversed connection, different supply,
+// remounted horn) before each block, and that label is printed with the block
+// so the console log reads as a labeled comparison rather than 300 identical
+// lines.
+static void test_servo_repeat_zero() {
+    printf("\n--- Servo repeat-to-zero (%d x %d) ---\n",
+           REPEAT_NUM_BLOCKS, REPEAT_BLOCK_SIZE);
+    printf("Desired behavior: %d commands to 0 degrees leave the servo at the\n"
+           "same physical position every time -- no creep, no buzzing, no\n"
+           "drift, no growing current draw.\n",
+           REPEAT_NUM_BLOCKS * REPEAT_BLOCK_SIZE);
+    printf("\nEach block of %d is labeled with whatever you are changing for\n"
+           "that block, so the blocks can be compared against each other.\n",
+           REPEAT_BLOCK_SIZE);
+    printf("Commands are spaced %d ms apart, so a block takes about %d s.\n",
+           REPEAT_DELAY_MS, (REPEAT_BLOCK_SIZE * REPEAT_DELAY_MS) / 1000);
+
+    int num = 0, led_pos = 0;
+    ask_servo_and_channel(&num, &led_pos);
+    Servo servo(num, led_pos);
+
+    const Calibration cal = calibration_for(num);
+    printf("    Servo %d: slope %.3f, offset %+.2f\n",
+           num, (double)cal.slope, (double)cal.offset);
+
+    // Labels are kept for the recap at the end, so the whole session can be
+    // read off one screen instead of scrolling back through the blocks.
+    static const char *ORDINAL[] = { "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH" };
+    static_assert(REPEAT_NUM_BLOCKS <= 5, "add ordinals for the extra blocks");
+    char labels[REPEAT_NUM_BLOCKS][64];
+    char observations[REPEAT_NUM_BLOCKS][64];
+
+    for (int block = 0; block < REPEAT_NUM_BLOCKS; ++block) {
+        printf("\n=== %s %d commands (block %d of %d) ===\n",
+               ORDINAL[block], REPEAT_BLOCK_SIZE, block + 1, REPEAT_NUM_BLOCKS);
+        printf("    What is being changed for these %d commands?\n", REPEAT_BLOCK_SIZE);
+        printf("    (e.g. \"reverse connection\", \"stock wiring\", \"5V supply\")\n");
+        printf("    Label: ");
+        read_line(labels[block], sizeof labels[block]);
+        if (labels[block][0] == '\0') {
+            snprintf(labels[block], sizeof labels[block], "(no label given)");
+        }
+
+        // Sized for the longest possible expansion: 48 characters of
+        // fixed text plus a full 63-character label. The build treats
+        // format truncation as an error, so this cannot be sized for
+        // the labels people are likely to type.
+        char prompt[128];
+        snprintf(prompt, sizeof prompt,
+                 "Make that change, then stand clear -- block %d: %s",
+                 block + 1, labels[block]);
+        wait_for_enter(prompt);
+
+        printf("\n  >>> %s %d commands to 0 deg -- %s\n",
+               ORDINAL[block], REPEAT_BLOCK_SIZE, labels[block]);
+        for (int i = 1; i <= REPEAT_BLOCK_SIZE; ++i) {
+            servo.move_to_angle(0.0f);
+            if (i % REPEAT_PROGRESS_EVERY == 0) {
+                printf("      [%s: %s] %3d / %d commanded to 0 deg\n",
+                       ORDINAL[block], labels[block], i, REPEAT_BLOCK_SIZE);
+            }
+            vTaskDelay(pdMS_TO_TICKS(REPEAT_DELAY_MS));
+        }
+        printf("  <<< block %d done (%s): %d commands to 0 deg sent\n",
+               block + 1, labels[block], REPEAT_BLOCK_SIZE);
+
+        printf("\n    What did the servo do during this block? (blank to skip)\n");
+        printf("    Observation: ");
+        read_line(observations[block], sizeof observations[block]);
+    }
+
+    printf("\n    Recap -- %d commands to 0 deg in total:\n",
+           REPEAT_NUM_BLOCKS * REPEAT_BLOCK_SIZE);
+    for (int block = 0; block < REPEAT_NUM_BLOCKS; ++block) {
+        printf("      block %d (%s %d): %-28s -> %s\n",
+               block + 1, ORDINAL[block], REPEAT_BLOCK_SIZE, labels[block],
+               observations[block][0] ? observations[block] : "(no observation)");
+    }
+
+    printf("\n    PASS if the servo held the same position through every block\n"
+           "    and blocks differ only where you expected them to. Creep that\n"
+           "    accumulates over a block points at the servo losing or\n"
+           "    mis-latching commands; a difference that appears only in one\n"
+           "    block belongs to whatever you changed for it.\n");
+    ask_result(9);
 }
 
 
@@ -1127,6 +1766,8 @@ static void print_menu() {
         printf("  %d) %-32s [%s]\n", i, records[i].name, result_str(records[i].result));
     }
     printf("  i) I2C bus scan (diagnostic)\n");
+    printf("  p) center all servos (assembly helper, no verdict)\n");
+    printf("  j) jog PWM counts / set a servo center (no verdict)\n");
     printf("  s) summary (Markdown, ready to paste)\n");
     printf("  r) reset ONE test result\n");
     printf("  c) clear ALL results\n");
@@ -1185,6 +1826,7 @@ void run_test_session() {
     printf("  - Power switch within reach\n\n");
 
     load_results();
+    report_center_overrides();
 
     for (;;) {
         print_menu();
@@ -1195,6 +1837,8 @@ void run_test_session() {
         if (line[0] == 'q') break;
         if (line[0] == 's') { print_summary(); continue; }
         if (line[0] == 'i') { i2c_scan(); continue; }
+        if (line[0] == 'p') { center_all_servos(); continue; }
+        if (line[0] == 'j') { jog_servo_pwm(); continue; }
         if (line[0] == 'r') {
             const int which = ask_int("Which test to reset", 0, NUM_TESTS - 1);
             clear_one(which);
@@ -1226,6 +1870,7 @@ void run_test_session() {
             case 6: test_move_to_pwm_skipped();    break;
             case 7: test_spotservo_limits();       break;
             case 8: test_spotservo_protractor();   break;
+            case 9: test_servo_repeat_zero();      break;
         }
     }
 

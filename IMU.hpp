@@ -65,6 +65,8 @@ class IMU {
               // MODIFIES: angvel_zero and accel_zero
               void calibrate();
 
+              void reset_calibration();
+
               // MODIFIES: raw and converted values
               void update();
 
