@@ -31,7 +31,6 @@ constexpr float MIN_VELOCITY = 0.0f;        // mm/s, exclusive: a zero velocity
 constexpr float MIN_DUTY_FACTOR = 0.5f;      // below this the trot has a flight phase
 constexpr float MAX_DUTY_FACTOR = 1.0f;      // at this the foot never leaves the ground
 constexpr float MIN_PROP = 0.0f;             // at this the trapezoid degenerates to a triangle
-constexpr float MAX_PROP = 1.0f;             // required by TrapezoidPath
 
 
 struct GaitParams {

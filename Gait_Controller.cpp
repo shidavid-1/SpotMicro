@@ -114,11 +114,6 @@ static GaitParams validate_params(const GaitParams &p) {
       ESP_LOGE(TAG, "Prop %.3f is not greater than %.3f; trapezoid has no top segment.", p.prop, MIN_PROP);
       abort();
    }
-   if (p.prop >= MAX_PROP) {
-      ESP_LOGE(TAG, "Prop %.3f is not less than %.3f; top segment is not shorter than the base.",
-               p.prop, MAX_PROP);
-      abort();
-   }
 
    return p;
 }

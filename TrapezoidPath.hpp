@@ -26,6 +26,11 @@ class TrapezoidPath {
         d /                 \ b
           -------------------
                    a
+                ^ z
+                |
+                |
+            <---O y (out of screen)
+            x
 
         */
         // Height is the distance between the bottom segment and the top segment
@@ -34,14 +39,14 @@ class TrapezoidPath {
         // top_width = base_width * prop
         // Origin is the midpoint of the bottom segment, from which everything
         // else is defined relative to
-        // REQUIRES: prop < 1
+        // REQUIRES: prop > 0
         TrapezoidPath(vec<float> origin, float height, float base_width, float prop);
 
         // REQUIRES: 0 <= percent < 1
         // EFFECTS: Returns the point "percent" of the way along the perimeter
         // of the trapezoid, measured by arc length, starting at the corner with
-        // the lowest z coordinate and greatest y coordinate (where d meets a)
-        // and travelling along a in the -y direction.
+        // the lowest z coordinate and greatest x coordinate (where d meets a)
+        // and travelling along a in the -x direction.
         // Note that this is parameterized by distance, not by time: sweeping
         // percent linearly moves the point at a constant speed. A caller that
         // needs a non-uniform speed along the path is responsible for its own

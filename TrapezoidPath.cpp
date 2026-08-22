@@ -6,14 +6,14 @@
 
 TrapezoidPath::TrapezoidPath(vec<float> origin, float height, float base_width, float prop) 
     : origin(origin), perimeter(0.0f), height(height), base_width(base_width), prop(prop) {
-    TPUP_CHECK(prop < 1.0f, "TRAPEZOID PATH ERROR");
-    vec<float> point = {origin.x, origin.y + base_width / 2.0f, origin.z};
+    TPUP_CHECK(prop > 0.0f, "TRAPEZOID PATH ERROR");
+    vec<float> point = {origin.x + base_width / 2.0f, origin.y, origin.z};
     points.push_back(point);
-    point = {origin.x, origin.y - base_width / 2.0f, origin.z};
+    point = {origin.x - base_width / 2.0f, origin.y, origin.z};
     points.push_back(point);
-    point = {origin.x, origin.y - prop * base_width / 2.0f, origin.z + height};
+    point = {origin.x - prop * base_width / 2.0f, origin.y, origin.z + height};
     points.push_back(point);
-    point = {origin.x, origin.y + prop * base_width / 2.0f, origin.z + height};
+    point = {origin.x + prop * base_width / 2.0f, origin.y, origin.z + height};
     points.push_back(point);
 
     lengths.push_back(distance_between(points.at(0), points.at(1)));
@@ -40,8 +40,8 @@ vec<float> TrapezoidPath::percent_of_path(float percent) const {
     if (0 <= percent && percent < a / p) {
         float p_a = (p * percent) / a;
         return {
-            points.at(0).x,
-            points.at(0).y - p_a * a,
+            points.at(0).x - p_a * a,
+            points.at(0).y,
             points.at(0).z
         };
     }
@@ -50,8 +50,8 @@ vec<float> TrapezoidPath::percent_of_path(float percent) const {
     else if (a / p <= percent && percent < (a + b) / p) {
         float p_b = (p * percent - a) / b;
         return {
-            points.at(1).x,
-            points.at(1).y + p_b * (1 - prop) * base_width / 2.0f,
+            points.at(1).x + p_b * (points.at(2).x - points.at(1).x),
+            points.at(1).y,
             points.at(1).z + p_b * height
         };
     }
@@ -60,8 +60,8 @@ vec<float> TrapezoidPath::percent_of_path(float percent) const {
     else if ((a + b) / p <= percent && percent < (a + b + c) / p) {
         float p_c = (p * percent - a - b) / c;
         return {
-            points.at(2).x,
-            points.at(2).y + p_c * c,
+            points.at(2).x + p_c * c,
+            points.at(2).y,
             points.at(2).z
         };
     }
@@ -70,9 +70,9 @@ vec<float> TrapezoidPath::percent_of_path(float percent) const {
     else if ((a + b + c) / p <= percent && percent < 1) {
         float p_d = (p * percent - a - b - c) / d;
         return {
-            points.at(3).x,
-            points.at(3).y + p_d * (1 - prop) * base_width / 2.0f,
-            points.at(0).z + (1 - p_d) * height
+            points.at(3).x + p_d * (points.at(0).x - points.at(3).x),
+            points.at(3).y,
+            points.at(3).z - p_d * height
         };
     }
 
