@@ -45,10 +45,7 @@ inline float sin_deg(float deg)  { return std::sin(deg * RAD_PER_DEG); }
 // Nothing is thrown; the returned bool is true when the
 // target was reached exactly and false when it is one of
 // those approximations.
-std::pair<triplet<float>, bool> position_to_angles(const vec<float> &pos, const LegType lType) {
-    // Left/right mirroring is applied upstream by the Transformer
-    // (reflect_y), so every leg reaches IK in the same frame.
-    (void)lType;
+std::pair<triplet<float>, bool> position_to_angles(const vec<float> &pos) {
 
     // Leg geometry, named to match the derivation.
     constexpr float a = UPPERLEG_LENGTH;  // upper leg

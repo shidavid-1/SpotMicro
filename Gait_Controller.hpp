@@ -79,11 +79,16 @@ class GaitController {
       // longer stride on the outside of a turn).
       float phi_to_percent(float ph, LegType leg) const;
 
+      float add_phi_offset(float off) const;
+
    public:
       
       GaitController(GaitParams p);
+      
+      // MODIFIES: output_points
+      // EFFECTS: Computes the next points that each foot tip should be at based on the
+      // current phi value and writes them in output_points.
       void compute_next_points();
-      float add_phi_offset(float off) const;
       void increment_phi();
       void reset_phi();
       float get_phi() const;

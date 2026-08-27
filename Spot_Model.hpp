@@ -30,7 +30,12 @@ class Leg {
         SpotServo hip;
         SpotServo shoulder;
         SpotServo knee;
-        triplet<float> angles;
+        // DEFERRED: cached joint angles. Nothing tracks leg state yet, and a
+        // member that is never written is worse than no member -- move_to_pos
+        // would leave it stale while reading code assumed it was current.
+        // Re-enable together with get_angles/set_angles below, and set it in
+        // both the constructor and move_to_pos when you do.
+        // triplet<float> angles;
 
     public:
         // NOTE: leg geometry (HIP_OFFSET, SHOULDER_LENGTH, UPPERLEG_LENGTH,
@@ -39,9 +44,12 @@ class Leg {
 
         Leg(LegType lType, SpotServo hip, SpotServo shoulder, SpotServo knee);
 
-        triplet<float> get_angles() const;
+        // DEFERRED: angle tracking is not supported yet. These are commented
+        // out rather than left as stubs so no caller can build against an
+        // accessor that returns an uninitialized `angles`. See the member above.
+        // triplet<float> get_angles() const;
 
-        void set_angles(triplet<float> angs);
+        // void set_angles(triplet<float> angs);
 
         // REQUIRES: SAFETY CRITICAL: hip shoulder knee servo types are proper
         // EFFECTS: Moves the servos in one leg such that the tip of the foot
@@ -74,6 +82,9 @@ class SpotModel {
         };
     
     public:
+        
+        SpotModel();
+
         void set_orientation(vec<float> ori);
 
         void set_positition(vec<float> pos);

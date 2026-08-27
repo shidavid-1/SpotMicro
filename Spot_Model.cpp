@@ -9,6 +9,13 @@
 #include <cmath>                 // std::cos, std::sin, M_PI
 #include <cstdlib>               // exit
 
+SpotModel::SpotModel()
+    : frontLeft(LegType::frontLeft, SpotServo(1), SpotServo(2), SpotServo(3)), 
+      frontRight(LegType::frontRight, SpotServo(4), SpotServo(5), SpotServo(6)), 
+      backLeft(LegType::backLeft, SpotServo(7), SpotServo(8), SpotServo(9)), 
+      backRight(LegType::backRight, SpotServo(10), SpotServo(11), SpotServo(12)),
+      orientation({}), position({}) {}
+
 void SpotModel::set_orientation(vec<float> ori) {
     orientation = ori;
 }
@@ -29,7 +36,7 @@ legQuad<vec<float>> SpotModel::get_origins() const {
     return leg_origins;
 }
 
-Leg::Leg(LegType type, Servo hip, Servo shoulder, Servo knee)
+Leg::Leg(LegType type, SpotServo hip, SpotServo shoulder, SpotServo knee)
     : type(type), hip(hip), shoulder(shoulder), knee(knee) {
 
     if (static_cast<int>(type) < 0 || static_cast<int>(type) > 3) {
@@ -45,13 +52,16 @@ Leg::Leg(LegType type, Servo hip, Servo shoulder, Servo knee)
     }
 }
 
-triplet<float> Leg::get_angles() const {
-    return angles;
-}
-
-void Leg::set_angles(triplet<float> angs) {
-    angles = angs;
-}
+// DEFERRED: see the note on Leg's angle members in Spot_Model.hpp. Angle
+// tracking is not supported yet; these definitions come back when the `angles`
+// member does.
+// triplet<float> Leg::get_angles() const {
+//     return angles;
+// }
+//
+// void Leg::set_angles(triplet<float> angs) {
+//     angles = angs;
+// }
 
 void Leg::move_to_pos(vec<float> pos) {
     triplet thetas = position_to_angles(pos, type).first;

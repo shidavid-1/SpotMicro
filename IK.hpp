@@ -24,6 +24,6 @@
 // Returns <{theta_1, theta_2, theta_3}, reachable>, where
 // reachable is false when the angles describe one of those
 // approximations rather than the requested point.
-std::pair<triplet<float>, bool> position_to_angles(const vec<float> &pos, const LegType lType);
+std::pair<triplet<float>, bool> position_to_angles(const vec<float> &pos);
 
 #endif // IK_HPP
