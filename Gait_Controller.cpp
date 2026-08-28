@@ -118,14 +118,15 @@ static GaitParams validate_params(const GaitParams &p) {
    return p;
 }
 
-// Builds the point each leg's trapezoid is defined about. Factored out of the
-// constructor so that set_params rebuilds them exactly the same way.
+// Builds the point each leg's trapezoid is defined about. 
+// This needs to be done in the global FOR, thus the addition
+// of the leg origin values
 static legQuad<vec<float>> make_tip_origins(const GaitParams &p) {
    return { /* NEEDS TO BE UPDATED WITH ACTUAL VALUES */
-      {1.0f, 1.0f, -p.body_height},
-      {1.0f, 1.0f, -p.body_height},
-      {1.0f, 1.0f, -p.body_height},
-      {1.0f, 1.0f, -p.body_height},
+      {global_leg_origins.frontLeft.x + leg_tip_origins_xy.first, global_leg_origins.frontLeft.y + leg_tip_origins_xy.second, -p.body_height},
+      {global_leg_origins.frontRight.x + leg_tip_origins_xy.first, global_leg_origins.frontRight.y - leg_tip_origins_xy.second, -p.body_height},
+      {global_leg_origins.backLeft.x + leg_tip_origins_xy.first, global_leg_origins.backLeft.y + leg_tip_origins_xy.second, -p.body_height},
+      {global_leg_origins.backRight.x + leg_tip_origins_xy.first, global_leg_origins.backRight.y - leg_tip_origins_xy.second, -p.body_height}
    };
 }
 

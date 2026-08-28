@@ -49,6 +49,8 @@ class GaitController {
       GaitParams params;
       legQuad<vec<float>> tip_origins;    // origin from which each trapezoid is define
                                                 // note that this is different from origins in leg
+                                                // Also note that these origins MUST be in the GLOBAL
+                                                // reference frame
       legQuad<TrapezoidPath> paths;             // path each leg takes
       const legQuad<float> offset = {0.0f, 0.5f, 0.5f, 0.0f};
       legQuad<vec<float>> output_points;

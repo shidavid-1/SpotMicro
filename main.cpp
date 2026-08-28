@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
     SpotModel TPUP;
 
     // Gait Parameters //
-    float height_of_body = 500.0f;
+    float height_of_body = 150.0f;
     float height_of_step = 100.0f;
     float length_of_stride = 200.0f;
     float velocity_of_dog = 100.0f;
@@ -32,23 +32,26 @@ int main(int argc, char* argv[]) {
     // Transformer //
     Transformer trans = Transformer(&TPUP);
 
-    while (1) {
+    // Miscellanious Variables //
+    legQuad<triplet<float>> all_leg_angles = {};
+    int SERVO_DELAY_MS = 2.0f;
+
+    TickType_t initialTime = xTaskGetTickCount();
+
+    int count = 0;
+
+    while (count < 5000) {
         controller.compute_next_points();
         controller.increment_phi();
 
         trans.transform(controller.get_output_points());
 
-        position_to_angles(trans.get_next_points_frontLeft());
-        position_to_angles(trans.get_next_points_frontRight());
-        position_to_angles(trans.get_next_points_backLeft());
-        position_to_angles(trans.get_next_points_backRight());
+        TPUP.move_all_servos(trans.get_next_points(), SERVO_DELAY_MS);
 
-        // Left off here, next problem is figuring out where to store the
-        // next angles and how to make it command all of the servos
-        // current idea: Just make it quick, construct a legQuad<triplet<float>>
-        // put all of the angular positions into that and then
-        // write a function that allows you to adjust how much time you want
-        // the delay to be between servo commands and then commands all of the servos
-        // sequentially within the TPUP model.
+        ESP_LOGI("TESTING", "Front Left: (%f, %f, %f)", trans.get_next_points_frontLeft().x, trans.get_next_points_frontLeft().y, trans.get_next_points_frontLeft().z);
+        ++count;
+
+        // Creates rough absolute deadlines for each loop iteration.
+        vTaskDelayUntil(&initialTime, pdMS_TO_TICKS(12));
     }
 }

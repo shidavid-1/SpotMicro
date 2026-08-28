@@ -24,14 +24,15 @@ class Transformer {
       
       void transform(legQuad<vec<float>> gait_output);
 
-      vec<float> Transformer::get_next_points_frontLeft() const;
+      vec<float> get_next_points_frontLeft() const;
 
-      vec<float> Transformer::get_next_points_frontRight() const;
+      vec<float> get_next_points_frontRight() const;
 
-      vec<float> Transformer::get_next_points_backLeft() const;
+      vec<float> get_next_points_backLeft() const;
 
-      vec<float> Transformer::get_next_points_backRight() const;
+      vec<float> get_next_points_backRight() const;
 
+      legQuad<vec<float>> get_next_points() const;
 };
 
 #endif

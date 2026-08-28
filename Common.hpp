@@ -10,15 +10,21 @@
 #include "driver/i2c.h"
 #include "esp_log.h"
 #include <cstdlib>
+#include <utility>
 
 // Constants //
-constexpr float control_frequency = 80; // Hz
+constexpr float control_frequency = 83.33333333333333333333333333333f; // Hz
 constexpr float dt = 1.0f/control_frequency;
 constexpr gpio_num_t sda_pin = GPIO_NUM_11;
 constexpr gpio_num_t scl_pin = GPIO_NUM_12;
 constexpr i2c_port_t i2c_port = I2C_NUM_0;
 constexpr uint8_t IMU_ADDR = 0x68;
 constexpr uint8_t PCA_ADDR = 0x40;
+
+// This is defined to be the magnitude of the x and y coordinates of the
+// tip of the foot relative to the origin *of a particular leg*
+// when that leg has each of its servos positioned at a perfect center PWM
+constexpr std::pair<float, float> leg_tip_origins_xy = {5.20758868f, 61.5f};
 
 // Leg geometry, shared by the model and the IK solver
 constexpr float HIP_OFFSET      = 10.0f;          // mm
@@ -55,6 +61,14 @@ struct legQuad {
     T frontRight;
     T backLeft;
     T backRight;
+};
+
+constexpr legQuad<vec<float>> global_leg_origins 
+= {
+    {102.95f, 39.0f, -28.0f},   // Front Left
+    {102.95f, -39.0f, -28.0f},  // Front Right
+    {-102.95f, 39.0f, -28.0f},  // Back Left
+    {-102.95f, -39.0f, -28.0f}  // Back Right
 };
 
 // Macros //

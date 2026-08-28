@@ -15,8 +15,8 @@
 constexpr uint8_t HIP_LED_POS             = 13;
 constexpr uint8_t SHOULDER_LED_POS        = 14;
 constexpr uint8_t KNEE_LED_POS            = 15;
-constexpr float   CIRCLE_CENTER_X         = 0;   // inches
-constexpr float   CIRCLE_CENTER_Y         = 0;   // inches
+constexpr float   CIRCLE_CENTER_X         = 0;   // mm
+constexpr float   CIRCLE_CENTER_Y         = 0;   // mm
 constexpr int     NUM_STEPS               = 144;
 constexpr int     STEP_DELAY_MS           = 25;
 constexpr int     SERVO_SEQUENCE_DELAY_MS = 2.5;
@@ -53,10 +53,11 @@ class Leg {
 
         // REQUIRES: SAFETY CRITICAL: hip shoulder knee servo types are proper
         // EFFECTS: Moves the servos in one leg such that the tip of the foot
-        // is located at (x_pos, y_pos, z_pos).
+        // is located at (x_pos, y_pos, z_pos). The delay between each servo
+        // movement is delay_ms.
         // NOTE: If an unreachable position is inputted the foot tip will move
         // to the closest reachable point.
-        void move_to_pos(const vec<float> pos);
+        void move_to_pos(const vec<float> &pos, const int delay_ms);
 
         // EFFECTS: Traces a circle with the foot tip, in NUM_STEPS steps,
         // clockwise if `clockwise` is true and counter-clockwise otherwise.
@@ -73,13 +74,7 @@ class SpotModel {
                                 // the code works best when this initial orientation has the body transverse
                                 // plane perpendicular to gravity.
         vec<float> position;    // I actually don't think the x y coordinates matter.
-        const legQuad<vec<float>> leg_origins =
-        { /* NEEDS TO BE UPDATED WITH ACTUAL VALUES */
-            {1.0f, 1.0f, 1.0f},
-            {1.0f, 1.0f, 1.0f},
-            {1.0f, 1.0f, 1.0f},
-            {1.0f, 1.0f, 1.0f}
-        };
+        const legQuad<vec<float>> leg_origins = global_leg_origins;
     
     public:
         
@@ -94,6 +89,13 @@ class SpotModel {
         vec<float> get_position() const;
 
         legQuad<vec<float>> get_origins() const;
+
+        // REQUIRES: all_positions contains the positions that each
+        // foot tip needs to be at relative to EACH LEG'S FRAME OF REFERENCE
+        // MODIFIES: eventually will modify the state of all spotServos
+        // EFFECTS: moves all legs of the spot such that each leg's foot
+        // tip is coincident with the corresponding point in all_positions
+        void move_all_servos(const legQuad<vec<float>> &all_positions, const int delay_ms);
 };
 
 #endif

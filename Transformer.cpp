@@ -52,3 +52,7 @@ vec<float> Transformer::get_next_points_backLeft() const {
 vec<float> Transformer::get_next_points_backRight() const {
    return next_points_per_leg.backRight;
 }
+
+legQuad<vec<float>> Transformer::get_next_points() const {
+   return next_points_per_leg;
+}

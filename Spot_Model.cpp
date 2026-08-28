@@ -36,6 +36,13 @@ legQuad<vec<float>> SpotModel::get_origins() const {
     return leg_origins;
 }
 
+void SpotModel::move_all_servos(const legQuad<vec<float>> &all_positions, const int delay_ms) {
+    frontLeft.move_to_pos(all_positions.frontLeft, delay_ms);
+    frontRight.move_to_pos(all_positions.frontRight, delay_ms);
+    backLeft.move_to_pos(all_positions.backLeft, delay_ms);
+    backRight.move_to_pos(all_positions.backRight, delay_ms);
+}
+
 Leg::Leg(LegType type, SpotServo hip, SpotServo shoulder, SpotServo knee)
     : type(type), hip(hip), shoulder(shoulder), knee(knee) {
 
@@ -63,14 +70,14 @@ Leg::Leg(LegType type, SpotServo hip, SpotServo shoulder, SpotServo knee)
 //     angles = angs;
 // }
 
-void Leg::move_to_pos(vec<float> pos) {
-    triplet thetas = position_to_angles(pos, type).first;
+void Leg::move_to_pos(const vec<float> &pos, const int delay_ms) {
+    triplet thetas = position_to_angles(pos).first;
     hip.move_to_angle(-thetas.first + 90);
-    vTaskDelay(pdMS_TO_TICKS(SERVO_SEQUENCE_DELAY_MS));
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
     shoulder.move_to_angle(180 - thetas.third);
-    vTaskDelay(pdMS_TO_TICKS(SERVO_SEQUENCE_DELAY_MS));
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
     knee.move_to_angle(thetas.second);
-    vTaskDelay(pdMS_TO_TICKS(SERVO_SEQUENCE_DELAY_MS));
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
 }
 
 void Leg::trace_circle(bool clockwise) {
@@ -79,13 +86,16 @@ void Leg::trace_circle(bool clockwise) {
             ? 2.0f * M_PI * (1.0f - (float)i / NUM_STEPS)
             : 2.0f * M_PI * ((float)i / NUM_STEPS);
 
+        // Millimeters, to match the leg geometry in Common.hpp and the frame
+        // position_to_angles works in. Formerly inches: a 3 in radius about
+        // (0, 5.35) in the z = -5 in plane.
         vec pos = {
-            0.0f + 3.0f * std::cos(t),
-            5.35f + 3.0f * std::sin(t),
-            -5.0f
+            0.0f + 76.2f * std::cos(t),
+            135.89f + 76.2f * std::sin(t),
+            -127.0f
         };
 
-        move_to_pos(pos);
+        move_to_pos(pos, 2);
         vTaskDelay(pdMS_TO_TICKS(STEP_DELAY_MS));
     }
 }
