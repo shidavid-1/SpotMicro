@@ -32,6 +32,11 @@ class TrapezoidPath {
             <---O y (out of screen)
             x
 
+            Note that the "bottom left" point is the intersection of d and a
+            "Bottom right" is the intersection of b and a
+            "top right" is the intersection of c and b
+            "top left" is the intersection of c and d
+
         */
         // Height is the distance between the bottom segment and the top segment
         // Base_width is the length of the bottom segment
@@ -56,6 +61,11 @@ class TrapezoidPath {
         // EFFECTS: Returns side a's share of the perimeter, i.e. the fraction
         // of a full traversal spent on the base segment.
         float stance_fraction() const;
+
+        vec<float> get_bottomLeft_point() const;
+        vec<float> get_bottomRight_point() const;
+        vec<float> get_topRight_point() const;
+        vec<float> get_topLeft_point() const;
 };
 
 #endif

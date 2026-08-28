@@ -6,7 +6,8 @@
 
 TrapezoidPath::TrapezoidPath(vec<float> origin, float height, float base_width, float prop) 
     : origin(origin), perimeter(0.0f), height(height), base_width(base_width), prop(prop) {
-    TPUP_CHECK(prop > 0.0f, "TRAPEZOID PATH ERROR");
+    TPUP_CHECK(prop > 0.0f, "NEGATIVE PROPORTION IN TRAPEZOID PATH");
+    TPUP_CHECK(height > 0.0f, "NEGATIVE HEIGHT IN TRAPEZOID PATH");
     vec<float> point = {origin.x + base_width / 2.0f, origin.y, origin.z};
     points.push_back(point);
     point = {origin.x - base_width / 2.0f, origin.y, origin.z};
@@ -84,5 +85,18 @@ vec<float> TrapezoidPath::percent_of_path(float percent) const {
 
 float TrapezoidPath::stance_fraction() const {
     return lengths.at(0) / perimeter;
+}
+
+vec<float> TrapezoidPath::get_bottomLeft_point() const {
+    return points.at(0);
+}
+vec<float> TrapezoidPath::get_bottomRight_point() const{
+    return points.at(1);
+}
+vec<float> TrapezoidPath::get_topRight_point() const {
+    return points.at(2);
+}
+vec<float> TrapezoidPath::get_topLeft_point() const {
+    return points.at(3);
 }
 

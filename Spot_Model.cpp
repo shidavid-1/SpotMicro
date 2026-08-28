@@ -89,7 +89,7 @@ void Leg::trace_circle(bool clockwise) {
         // Millimeters, to match the leg geometry in Common.hpp and the frame
         // position_to_angles works in. Formerly inches: a 3 in radius about
         // (0, 5.35) in the z = -5 in plane.
-        vec pos = {
+        vec<float> pos = {
             0.0f + 76.2f * std::cos(t),
             135.89f + 76.2f * std::sin(t),
             -127.0f

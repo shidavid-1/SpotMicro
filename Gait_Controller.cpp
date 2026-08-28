@@ -146,6 +146,7 @@ GaitController::GaitController(GaitParams p)
      paths(make_paths(tip_origins, params)),
      phi(0.0f) {
 
+   TPUP_CHECK(!do_leg_paths_intersect(), "Leg Path Intersection Error");
    update_timing();
 }
 
@@ -158,6 +159,7 @@ void GaitController::set_params(GaitParams p) {
    params = validate_params(p);
    tip_origins = make_tip_origins(params);
    paths = make_paths(tip_origins, params);
+   TPUP_CHECK(!do_leg_paths_intersect(), "Leg Path Intersection Error");
    update_timing();
 }
 
@@ -201,6 +203,49 @@ float GaitController::add_phi_offset(float off) const {
    else {
       return phi + off;
    }
+}
+
+// REQUIRES: tolerance >= 0 (if tolerance is set to negative number, the
+// tolerance used will just be the magnitude of that number)
+// EFFECTS: Computes distance between rearmost points of both front paths
+// and frontmost points of both rear paths to ensure that the distance between
+// them is > tolerance + 2 * foot_tip_radius;
+bool GaitController::do_leg_paths_intersect() const {
+
+   // Check if any of the rear points are farther in front of the front points //
+   if (paths.backLeft.get_bottomLeft_point().x > paths.frontLeft.get_bottomRight_point().x ||
+       paths.backLeft.get_topLeft_point().x > paths.frontLeft.get_topRight_point().x) {
+         return true;
+   }
+
+   if (paths.backRight.get_bottomLeft_point().x > paths.frontRight.get_bottomRight_point().x ||
+       paths.backRight.get_topLeft_point().x > paths.frontRight.get_topRight_point().x) {
+         return true;
+   }
+
+   // Check if left side paths intersect //
+   if (distance_between(paths.frontLeft.get_bottomRight_point(), paths.backLeft.get_bottomLeft_point()) <= tolerance + 2 * FOOTTIP_RADIUS ||
+       distance_between(paths.frontLeft.get_bottomRight_point(), paths.backLeft.get_topLeft_point()) <= tolerance + 2 * FOOTTIP_RADIUS) {
+         return true;
+   }
+
+   if (distance_between(paths.frontLeft.get_topRight_point(), paths.backLeft.get_bottomLeft_point()) <= tolerance + 2 * FOOTTIP_RADIUS ||
+       distance_between(paths.frontLeft.get_topRight_point(), paths.backLeft.get_topLeft_point()) <= tolerance + 2 * FOOTTIP_RADIUS) {
+         return true;
+   }
+
+   // Check if right side paths intersec //
+   if (distance_between(paths.frontRight.get_bottomRight_point(), paths.backRight.get_bottomLeft_point()) <= tolerance + 2 * FOOTTIP_RADIUS ||
+       distance_between(paths.frontRight.get_bottomRight_point(), paths.backRight.get_topLeft_point()) <= tolerance + 2 * FOOTTIP_RADIUS) {
+         return true;
+   }
+
+   if (distance_between(paths.frontRight.get_topRight_point(), paths.backRight.get_bottomLeft_point()) <= tolerance + 2 * FOOTTIP_RADIUS ||
+       distance_between(paths.frontRight.get_topRight_point(), paths.backRight.get_topLeft_point()) <= tolerance + 2 * FOOTTIP_RADIUS) {
+         return true;
+   }
+
+   return false;
 }
 
 void GaitController::reset_phi() {

@@ -59,6 +59,8 @@ class GaitController {
       float phi_increment; // amount to increment phi by for the given control loop frequency
                            // in order to make sure foot stays in stance phase for appropriate amt of time
 
+      const float tolerance = std::fabs(50.0f);
+
       // MODIFIES: gait_period, phi_increment
       // EFFECTS: Recomputes the cycle timing from the current params. Must be
       // called after any change to params.
@@ -82,6 +84,13 @@ class GaitController {
       float phi_to_percent(float ph, LegType leg) const;
 
       float add_phi_offset(float off) const;
+
+      // REQUIRES: tolerance >= 0 (if tolerance is set to negative number, the
+      // tolerance used will just be the magnitude of that number)
+      // EFFECTS: Computes distance between rearmost points of both front paths
+      // and frontmost points of both rear paths to ensure that the distance between
+      // them is > tolerance + 2 * foot_tip_radius;
+      bool do_leg_paths_intersect() const;
 
    public:
       

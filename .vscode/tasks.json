@@ -1,0 +1,50 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // Host simulation build: compiles the root main.cpp control loop
+            // against the shim headers in sim/. Separate from the PlatformIO /
+            // ESP-IDF firmware build, whose entry point is main/main.cpp.
+            "label": "Sim: Build",
+            "type": "shell",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/sim/build_sim.ps1"
+            ],
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "Sim: Build & Run",
+            "type": "shell",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/sim/build_sim.ps1",
+                "-Run"
+            ],
+            "group": "build",
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            // -g -O0 so sim/tpup_sim.exe can be stepped through in a debugger.
+            "label": "Sim: Build (debug)",
+            "type": "shell",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/sim/build_sim.ps1",
+                "-DebugBuild"
+            ],
+            "group": "build",
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        }
+    ]
+}

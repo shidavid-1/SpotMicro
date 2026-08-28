@@ -18,6 +18,7 @@ typedef enum { GPIO_NUM_NC = -1, GPIO_NUM_0 = 0, GPIO_NUM_11 = 11, GPIO_NUM_12 =
 typedef enum { GPIO_PULLUP_DISABLE = 0, GPIO_PULLUP_ENABLE = 1 } gpio_pullup_t;
 typedef enum { I2C_NUM_0 = 0, I2C_NUM_1 = 1, I2C_NUM_MAX } i2c_port_t;
 typedef enum { I2C_MODE_SLAVE = 0, I2C_MODE_MASTER = 1 } i2c_mode_t;
+typedef enum { I2C_MASTER_ACK = 0, I2C_MASTER_NACK = 1, I2C_MASTER_LAST_NACK = 2 } i2c_ack_type_t;
 
 // Field order must match the real i2c_config_t: Common.cpp initializes it with
 // designated initializers, which C++ requires to appear in declaration order.
@@ -46,8 +47,8 @@ inline esp_err_t i2c_master_start(i2c_cmd_handle_t) { return ESP_OK; }
 inline esp_err_t i2c_master_stop(i2c_cmd_handle_t) { return ESP_OK; }
 inline esp_err_t i2c_master_write_byte(i2c_cmd_handle_t, uint8_t, bool) { return ESP_OK; }
 inline esp_err_t i2c_master_write(i2c_cmd_handle_t, const uint8_t *, size_t, bool) { return ESP_OK; }
-inline esp_err_t i2c_master_read_byte(i2c_cmd_handle_t, uint8_t * data, int) { if (data) *data = 0; return ESP_OK; }
-inline esp_err_t i2c_master_read(i2c_cmd_handle_t, uint8_t * data, size_t len, int) {
+inline esp_err_t i2c_master_read_byte(i2c_cmd_handle_t, uint8_t * data, i2c_ack_type_t) { if (data) *data = 0; return ESP_OK; }
+inline esp_err_t i2c_master_read(i2c_cmd_handle_t, uint8_t * data, size_t len, i2c_ack_type_t) {
     for (size_t i = 0; data && i < len; ++i) data[i] = 0;
     return ESP_OK;
 }

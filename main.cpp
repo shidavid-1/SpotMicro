@@ -16,10 +16,10 @@ int main(int argc, char* argv[]) {
     SpotModel TPUP;
 
     // Gait Parameters //
-    float height_of_body = 150.0f;
-    float height_of_step = 100.0f;
-    float length_of_stride = 200.0f;
-    float velocity_of_dog = 100.0f;
+    float height_of_body = 230.0f;
+    float height_of_step = 30.0f;
+    float length_of_stride = 50.0f;
+    float velocity_of_dog = 10.0f;
     float duty_fact = 0.7;
     float proportion = 1.2;
 
