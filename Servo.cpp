@@ -73,7 +73,7 @@ SpotCalibration spot_calibration_for(int num) {
         case 7:  return { 304, ServoType::hip };
         case 8:  return { 290, ServoType::shoulder };
         case 9:  return { 312, ServoType::knee };
-        case 10: return { 316, ServoType::hip };
+        case 10: return { 326, ServoType::hip };
         case 11: return { 283, ServoType::shoulder };
         case 12: return { 303, ServoType::knee };
     }
