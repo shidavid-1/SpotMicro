@@ -132,18 +132,6 @@ static int ask_int(const char *prompt, int lo, int hi) {
     }
 }
 
-// EFFECTS: Prompts for a float. Returns false on a blank line, which callers
-// treat as "done".
-static bool ask_float(const char *prompt, float *out) {
-    char line[24];
-    printf("    %s (blank to finish): ", prompt);
-    read_line(line, sizeof line);
-    if (line[0] == '\0') return false;
-    *out = strtof(line, NULL);
-    return true;
-}
-
-
 // Key codes returned by read_key(). A printable key comes back as its own
 // character code; the arrow keys arrive as multi-byte escape sequences, so
 // they are folded into these values, chosen to sit above the byte range.
@@ -1256,20 +1244,25 @@ static bool needs_rear_first(ServoType from, ServoType to) {
         && (from == ServoType::knee || from == ServoType::free);
 }
 
-// MODIFIES: every shoulder and knee on the robot.
-// EFFECTS: Opens all four legs out straight -- shoulders first, then knees --
-// with the FRONT pair finishing completely before the REAR pair moves at all,
-// and each step given time to arrive before the next starts. Records what each
-// joint was commanded to in `straightened`, indexed by servo number, leaving
-// NAN for the hips, which this pass does not touch.
-static void straighten_legs(float *straightened) {
+// MODIFIES: every shoulder and knee on the robot, except those on `skip_leg`.
+// EFFECTS: Opens the legs out straight -- shoulders first, then knees -- with
+// the FRONT pair finishing completely before the REAR pair moves at all, and
+// each step given time to arrive before the next starts. `skip_leg` is a
+// zero-based leg index to leave untouched, or -1 to open all four. Records
+// what each joint was commanded to in `straightened`, indexed by servo number,
+// leaving NAN for the hips, which this pass does not touch, and for anything
+// on the skipped leg.
+static void straighten_legs(float *straightened, int skip_leg) {
     printf("\n     -- Straighten pass --\n");
-    printf("        The legs open out straight BEFORE the pose is commanded:\n");
     printf("        shoulders -> %.0f deg, then knees -> %.0f deg (clamped to the\n"
            "        knee maximum, %.0f). Front pair first, then the rear pair,\n"
            "        %d ms per step to arrive.\n",
            (double)STRAIGHT_SHOULDER_ANGLE, (double)STRAIGHT_KNEE_ANGLE,
            (double)limit_for(ServoType::knee).max, STRAIGHTEN_SETTLE_MS);
+    if (skip_leg >= 0) {
+        printf("        Leg %d (servos %d-%d) is left where it is.\n",
+               skip_leg + 1, skip_leg * 3 + 1, skip_leg * 3 + 3);
+    }
 
     // Shoulders before knees: the leg swings clear of the body while it is
     // still folded up, and only extends once it is out there.
@@ -1287,6 +1280,7 @@ static void straighten_legs(float *straightened) {
                                ? STRAIGHT_SHOULDER_ANGLE
                                : STRAIGHT_KNEE_ANGLE;
             for (int n = lo; n <= hi; ++n) {
+                if (skip_leg >= 0 && (n - 1) / 3 == skip_leg) continue;
                 SpotServo s(n);
                 if (s.get_type() != which) continue;
                 s.move_to_angle(target);
@@ -1442,7 +1436,7 @@ static bool prepare_safe_pose(int under_test, ServoType test_type) {
 
     float straightened[POSE_TABLE_SIZE];
     for (int i = 0; i < POSE_TABLE_SIZE; ++i) straightened[i] = NAN;
-    if (straighten) straighten_legs(straightened);
+    if (straighten) straighten_legs(straightened, -1);
 
     printf("\n     -- Pose pass --\n");
     if (rear_first) {
@@ -1469,6 +1463,92 @@ static bool prepare_safe_pose(int under_test, ServoType test_type) {
 
     printf("     Pose set.\n");
     last_pose = test_type;
+    vTaskDelay(pdMS_TO_TICKS(400));
+    return true;
+}
+
+
+//////////////////// RESTING POSE ////////////////////
+
+// Where a leg that is not being looked at parks: hip centered, shoulder and
+// knee at the straighten-pass angles, which together put the leg out straight
+// and pointing at the ground under its own hip. The knee angle goes through
+// move_to_angle like any other, so it clamps to the knee maximum (176 deg) --
+// four degrees short of straight is as straight as that joint gets.
+constexpr float REST_HIP_ANGLE = 0.0f;
+
+// MODIFIES: the shoulders and knees of every leg the pose straightens, and the
+// hips of the three legs the joint under test is not on.
+// EFFECTS: Parks those three legs at the resting angles and leaves the leg
+// under test exactly where it is, so the only thing that moves while a
+// protractor is being read is the joint being read. `first_pose` says this is
+// the first pose of the walk, where the leg under test is straightened along
+// with the rest: the robot is coming from an unknown position and that leg
+// wants a known one as much as its neighbours do. Every later pose leaves it
+// out, since nothing but the reads themselves has moved it since.
+//
+// Sequenced the way every other pose change on this robot is: all four legs
+// (or three) straighten FIRST -- shoulders before knees, so a folded leg
+// swings clear of the body before it extends, and the FRONT pair before the
+// REAR pair -- then the hips come to center, last and ramped, since by then
+// the leg they are turning is extended into a long lever. Returns false if the
+// operator quit at the confirmation prompt, in which case nothing has been
+// commanded.
+static bool rest_other_legs(int under_test, bool first_pose) {
+    const int leg  = (under_test - 1) / 3;
+    const int skip = first_pose ? -1 : leg;
+
+    printf("\n  -- Resting pose (the other three legs) --\n");
+    printf("     hip -> %.0f deg, shoulder -> %.0f deg, knee -> %.0f deg: the leg\n"
+           "     straightened out and pointing at the ground.\n",
+           (double)REST_HIP_ANGLE, (double)STRAIGHT_SHOULDER_ANGLE,
+           (double)STRAIGHT_KNEE_ANGLE);
+    if (first_pose) {
+        printf("     ALL FOUR legs straighten first -- front pair, then rear pair\n"
+               "     -- leg %d included, since the robot is coming from a position\n"
+               "     the session cannot know. Only its HIP is left alone, and\n"
+               "     from here on nothing but your own commands moves that leg.\n",
+               leg + 1);
+    }
+    else {
+        printf("     Leg %d (servos %d-%d) is NOT posed. The joint under test has to\n"
+               "     stay where the protractor is reading it, and the two joints it\n"
+               "     shares a leg with are left alone with it.\n",
+               leg + 1, leg * 3 + 1, leg * 3 + 3);
+    }
+    printf("\n     %s joints are about to move. Keep hands clear and make sure\n"
+           "     the legs have room to swing.\n", first_pose ? "ELEVEN" : "NINE");
+    if (wait_for_enter_or_quit("Clear of the robot")) return false;
+
+    float straightened[POSE_TABLE_SIZE];
+    for (int i = 0; i < POSE_TABLE_SIZE; ++i) straightened[i] = NAN;
+    straighten_legs(straightened, skip);
+
+    printf("\n     -- Hip pass --\n");
+    for (int n = 1; n <= 12; ++n) {
+        if ((n - 1) / 3 == leg) continue;
+        SpotServo s(n);
+        if (s.get_type() != ServoType::hip) continue;
+
+        const int steps = pose_steps_for(n, s.get_type(), REST_HIP_ANGLE);
+        if (steps > 1) {
+            printf("        servo %2d (hip     ): %+.0f deg, ramped from %+.0f in"
+                   " %d steps\n", n, (double)REST_HIP_ANGLE,
+                   (double)last_angle[n], steps);
+        }
+        else {
+            printf("        servo %2d (hip     ): %+.0f deg\n",
+                   n, (double)REST_HIP_ANGLE);
+        }
+        move_pose_angle(s, n, REST_HIP_ANGLE, steps);
+        vTaskDelay(pdMS_TO_TICKS(POSE_STAGGER_MS));
+    }
+
+    // Three legs at rest and one wherever the protractor left it is none of
+    // the poses the transition rules know how to leave, so the next pose
+    // change is sequenced as if the robot could be in the worst of them.
+    last_pose = ServoType::free;
+    printf("     Resting pose set. Leg %d is free to be read.\n", leg + 1);
     vTaskDelay(pdMS_TO_TICKS(400));
     return true;
 }
@@ -1906,13 +1986,65 @@ static void test_spotservo_limits() {
 }
 
 
+// Where the knee on the leg under test is parked while that leg's SHOULDER is
+// being read: the lower leg folds up out of the way instead of hanging in line
+// with the segment the protractor is measuring. The limits test parks a knee
+// at SHOULDER_TEST_KNEE_ANGLE for its own reasons; this is the protractor
+// test's own number and moves independently of it. Inside the knee limits
+// [20, 176], so move_to_angle passes it through unclamped.
+constexpr float PROTRACTOR_SHOULDER_KNEE_ANGLE = 40.0f;
+
+// MODIFIES: the knee on the leg that `under_test` belongs to.
+// EFFECTS: Folds that knee to PROTRACTOR_SHOULDER_KNEE_ANGLE when the joint
+// under test is a shoulder, and does nothing at all for a hip or a knee.
+// Called before the protractor goes on, so the leg has finished moving by the
+// time there are hands near it, and given the same settle as the straighten
+// pass -- this is the last thing to move before a reading is taken.
+static void park_knee_for_shoulder(int under_test) {
+    SpotServo joint(under_test);
+    if (joint.get_type() != ServoType::shoulder) return;
+
+    const int knee = under_test + 1;   // per-leg triples: hip, shoulder, knee
+
+    printf("\n  -- Knee park (the leg under test) --\n");
+    printf("     servo %2d (knee    ): %+.0f deg, folded clear while servo %d is\n"
+           "     read. It is the one joint on this leg that the resting pose\n"
+           "     leaves alone and the reading still needs placed.\n",
+           knee, (double)PROTRACTOR_SHOULDER_KNEE_ANGLE, under_test);
+
+    SpotServo kn(knee);
+    kn.move_to_angle(PROTRACTOR_SHOULDER_KNEE_ANGLE);
+    last_angle[knee] = PROTRACTOR_SHOULDER_KNEE_ANGLE;
+    vTaskDelay(pdMS_TO_TICKS(STRAIGHTEN_SETTLE_MS));
+}
+
+
+// What the operator typed at the angle prompt. A blank line and a q part ways
+// here: one finishes the joint and moves the walk on, the other stops the walk
+// where it is.
+enum class AngleReply { angle, done, quit };
+
+// EFFECTS: Prompts for the next angle to command on the joint under test.
+// A number is an angle to send; a blank line finishes the joint; q quits the
+// walk, the same q the limit test takes at any of its prompts.
+static AngleReply ask_protractor_angle(float *out) {
+    char line[24];
+    printf("    Angle to command (blank finishes this joint, q quits): ");
+    read_line(line, sizeof line);
+    if (line[0] == '\0')                    return AngleReply::done;
+    if (line[0] == 'q' || line[0] == 'Q')   return AngleReply::quit;
+    *out = strtof(line, NULL);
+    return AngleReply::angle;
+}
+
 // EFFECTS: Runs the protractor check on one joint: reports its limits and the
 // angle that maps to its center count, then commands whatever angles the
-// operator types until they enter a blank line. Records nothing -- the single
-// verdict for the whole test is taken by the caller, since the operator is
-// judging one property (does the joint move the way the convention says) and
-// it either holds across the joints they looked at or it does not.
-static void protractor_one_joint(int num) {
+// operator types until they finish the joint or quit the walk. Returns true if
+// they quit. Records nothing -- the single verdict for the whole test is taken
+// by the caller, since the operator is judging one property (does the joint
+// move the way the convention says) and it either holds across the joints they
+// looked at or it does not.
+static bool protractor_one_joint(int num) {
     SpotServo joint(num);
 
     const AngleLimit lim = limit_for(joint.get_type());
@@ -1938,7 +2070,11 @@ static void protractor_one_joint(int num) {
     }
 
     float angle;
-    while (ask_float("Angle to command", &angle)) {
+    for (;;) {
+        const AngleReply reply = ask_protractor_angle(&angle);
+        if (reply == AngleReply::done) return false;
+        if (reply == AngleReply::quit) return true;
+
         const float effective = angle < lim.min ? lim.min
                               : angle > lim.max ? lim.max
                               : angle;
@@ -1947,6 +2083,11 @@ static void protractor_one_joint(int num) {
                    (double)angle, (double)lim.min, (double)lim.max, (double)effective);
         }
         joint.move_to_angle(angle);
+        // The resting pose ramps a hip from wherever the session last left it,
+        // and this is the only thing that moves the joint under test, so what
+        // the operator typed is what the next pose has to start its ramp from.
+        // Recorded as REQUESTED, matching what move_pose_angle stores.
+        last_angle[num] = angle;
         printf("      commanded %.1f deg -> check the protractor\n", (double)angle);
         vTaskDelay(pdMS_TO_TICKS(600));
     }
@@ -1965,23 +2106,100 @@ static void test_spotservo_protractor() {
     printf("SAFETY: body on a stand, legs clear.\n");
     printf("Blank line at the angle prompt finishes a joint; walking all\n"
            "twelve then moves on to the next one.\n");
+    printf("Walking all twelve does not have to be finished in one go: q +\n"
+           "Enter at ANY prompt below -- an angle prompt included -- stops the\n"
+           "walk where it is and goes straight to the verdict.\n");
+    printf("\nThis starts by straightening ALL FOUR legs -- the front two, then\n"
+           "the back two -- and then holds the three legs you are NOT reading\n"
+           "at hip %.0f, shoulder %.0f, knee %.0f, each hanging straight down, so\n"
+           "no folded leg sits in the way of the one you are reading. Say no if\n"
+           "the robot is not assembled, or if a leg cannot safely be moved.\n",
+           (double)REST_HIP_ANGLE, (double)STRAIGHT_SHOULDER_ANGLE,
+           (double)STRAIGHT_KNEE_ANGLE);
+    printf("A SHOULDER is read with its own leg's knee folded to %.0f deg, so\n"
+           "that knee is commanded there too before the reading is taken.\n",
+           (double)PROTRACTOR_SHOULDER_KNEE_ANGLE);
 
     const int choice = ask_int("Servo number (0 = walk all twelve)", 0, 12);
+
+    char hold[8];
+    printf("    Hold the other three legs at rest? (Y/n): ");
+    read_line(hold, sizeof hold);
+    const bool rest_others = (hold[0] != 'n' && hold[0] != 'N');
+    if (!rest_others) {
+        printf("    Nothing but the joint under test will be commanded.\n");
+    }
+
     ensure_pca_ready();
 
     const int first = (choice == 0) ? 1  : choice;
     const int last  = (choice == 0) ? 12 : choice;
 
+    // However the robot was left -- by an earlier test, by the jog tool, or by
+    // hand -- the session cannot know, so the first pose change is sequenced
+    // as if it were coming from the most awkward pose it could be in.
+    if (rest_others) reset_pose_memory();
+
+    // Which leg the resting pose is currently holding the other three around.
+    // Only a joint on a different leg needs it redone: the three joints of one
+    // leg are all read with the same nine joints parked.
+    int  posed_leg  = -1;
+    bool quit       = false;
+    bool quit_early = false;   // quit at an angle prompt, not at the pose one
+    int  stopped_at = 0;
+
     for (int num = first; num <= last; ++num) {
+        if (rest_others && (num - 1) / 3 != posed_leg) {
+            // posed_leg is still -1 on the first pose of the walk, which is
+            // the one that straightens all four legs.
+            if (!rest_other_legs(num, posed_leg < 0)) {
+                quit       = true;
+                stopped_at = num;
+                break;
+            }
+            posed_leg = (num - 1) / 3;
+        }
+
+        // A shoulder is read with its own leg's knee folded. Gated on the
+        // resting pose for the same reason that is: an operator who said no
+        // to legs moving meant this leg too.
+        if (rest_others) park_knee_for_shoulder(num);
+
         // Walking all twelve means the protractor has to be moved and
         // re-taped between joints, so pause rather than commanding a joint
-        // nobody is looking at yet.
+        // nobody is looking at yet. After the resting pose, not before: the
+        // legs finish moving before anyone puts a hand near them.
         if (choice == 0) {
             char prompt[64];
             snprintf(prompt, sizeof prompt, "Protractor taped to servo %d", num);
             wait_for_enter(prompt);
         }
-        protractor_one_joint(num);
+        if (protractor_one_joint(num)) {
+            quit       = true;
+            quit_early = true;
+            stopped_at = num;
+            break;
+        }
+    }
+
+    if (quit_early) {
+        printf("\n    STOPPED EARLY during servo %d.\n", stopped_at);
+        if (stopped_at < last) {
+            printf("    Servos %d-%d were not read at all.\n",
+                   stopped_at + 1, last);
+        }
+        printf("    The verdict below covers only what was actually read --\n"
+               "    say so in the note.\n");
+    }
+    else if (quit) {
+        printf("\n    STOPPED before servo %d: the resting pose was declined, and\n"
+               "    it is what clears the other legs out of the way.\n", stopped_at);
+        if (stopped_at > first) {
+            printf("    Servos %d-%d were read; %d-%d were not.\n",
+                   first, stopped_at - 1, stopped_at, last);
+        }
+        printf("    The verdict below covers only what was actually read --\n"
+               "    say so in the note.\n");
     }
 
     printf("\n    PASS if the joint moved in the DIRECTION the convention says\n"

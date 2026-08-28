@@ -15,6 +15,27 @@ Firmware: `b66b962-dirty` | ESP-IDF 6.0.0
 | 5 | Servo::move_to_angle sweep | PASS | Servo #3 passes, POST write consolidation |
 | 6 | Servo::move_to_pwm (scoped) | SKIP | implied by move_to_angle |
 | 7 | SpotServo #1: limit saturation | PASS | left knee bolt touching, but fine otherwi |
+| 8 | SpotServo #2: protractor angles | PASS | ALL WORKS!!! |
+
+**4 passed, 0 failed, 1 skipped, 4 not run**
+
+## Test run - build b66b962-dirty (Aug 19 2026 15:49:33)
+
+Note on version: the version committed immediately after the one this test was
+done on is the version of the software this particular suite was run on.
+
+Firmware: `b66b962-dirty` | ESP-IDF 6.0.0
+
+| # | Test | Result | Note |
+|---|------|--------|------|
+| 0 | Self tests (pure math) | PASS | automatic |
+| 1 | IMU ctor: zeroed + ranges set | ---- |  |
+| 2 | IMU ctor: range saturation | ---- |  |
+| 3 | IMU calibrate(): at rest | ---- |  |
+| 4 | IMU update(): six-face | ---- |  |
+| 5 | Servo::move_to_angle sweep | PASS | Servo #3 passes, POST write consolidation |
+| 6 | Servo::move_to_pwm (scoped) | SKIP | implied by move_to_angle |
+| 7 | SpotServo #1: limit saturation | PASS | left knee bolt touching, but fine otherwi |
 | 8 | SpotServo #2: protractor angles | ---- |  |
 
 Note on limit saturation, the front left knee joint's servo horn central bolt head

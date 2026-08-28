@@ -78,7 +78,14 @@ constexpr legQuad<vec<float>> global_leg_origins
 // the ESP-IDF assertion-level setting, so it is the right check for a condition
 // that must hold before the servos are commanded. Use plain assert() for
 // checks that are only there to catch programmer error during bring-up.
-#define TPUP_CHECK(cond, tag)                                                      do {                                                                               if (!(cond)) {                                                                     ESP_LOGE((tag), "Check failed: %s (%s:%d)",                                             #cond, __FILE__, __LINE__);                                           abort();                                                                   }                                                                          } while (0)
+#define TPUP_CHECK(cond, tag)                                  \
+   do {                                                       \
+      if (!(cond)) {                                          \
+         ESP_LOGE((tag), "Check failed: %s (%s:%d)",           \
+                  #cond, __FILE__, __LINE__);                 \
+         abort();                                             \
+      }                                                       \
+   } while (0)
 
 // Functions //
 
