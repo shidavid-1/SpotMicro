@@ -54,7 +54,6 @@ float distance_between(const vec<float> lhs, const vec<float> rhs) {
 }
 
 // Operator Overloads //
-
-vec<float> operator-(const vec<float> &lhs, const vec<float> &rhs) {
-    return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
-}
+//
+// The vec/legQuad operators are templates, so they live in Common.hpp -- see
+// the note there.

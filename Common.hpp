@@ -97,6 +97,30 @@ float distance_between(const vec<float> lhs, const vec<float> rhs);
 
 // Operator Overloads //
 
-vec<float> operator-(const vec<float> &lhs, const vec<float> &rhs);
+// NOTE: defined here rather than in Common.cpp. A template is only compiled
+// once it is instantiated, and that happens in the translation unit doing the
+// call -- so a definition parked in the .cpp leaves every other TU with an
+// undefined reference at link time.
+
+template <typename T>
+vec<T> operator-(const vec<T> &lhs, const vec<T> &rhs) {
+    return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
+}
+
+template <typename T>
+vec<T> operator+(const vec<T> &lhs, const vec<T> &rhs) {
+    return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
+}
+
+template <typename T>
+bool operator==(const vec<T> &lhs, const vec<T> &rhs) {
+    return (lhs.x == rhs.x) && (lhs.y == rhs.y) && (lhs.z == rhs.z);
+}
+
+template <typename T>
+bool operator==(const legQuad<T> &lhs, const legQuad<T> &rhs) {
+    return (lhs.frontLeft == rhs.frontLeft) && (lhs.frontRight == rhs.frontRight) &&
+    (lhs.backLeft == rhs.backLeft) && (lhs.backRight == rhs.backRight);
+}
 
 #endif

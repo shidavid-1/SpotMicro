@@ -1,5 +1,7 @@
 #include "Self_Test.hpp"
 #include "Common.hpp"
+#include "Spot_Model.hpp"
+#include "Transformer.hpp"
 #include "esp_log.h"
 #include <cmath>
 #include <cstdio>
@@ -33,6 +35,58 @@ static void expect_true(const char *what, bool ok, const char *detail) {
         ++cases_failed;
         ESP_LOGE(TAG, "FAIL  %-34s  %s", what, detail);
     }
+}
+
+
+// Tolerance for the transform checks, in mm.
+//
+// Absolute rather than relative: these coordinates are bounded (|x| stays under
+// ~250 mm) and the origin case expects exact zeros, which a relative tolerance
+// has nothing to scale against. 1e-3 mm sits about two orders of magnitude
+// above one float ULP at 100 mm and far below anything a servo could resolve,
+// so it absorbs rounding without masking a real fault -- the mistakes this
+// catches (a dropped origin subtraction, a missing y reflection) are wrong by
+// tens of millimetres, not microns.
+constexpr float TRANSFORM_TOL_MM = 1e-3f;
+
+
+// EFFECTS: Returns true if every component of a is within tol of b.
+static bool vec_near(const vec<float> &a, const vec<float> &b, float tol) {
+    return std::fabs(a.x - b.x) <= tol
+        && std::fabs(a.y - b.y) <= tol
+        && std::fabs(a.z - b.z) <= tol;
+}
+
+
+// EFFECTS: Logs a PASS/FAIL line comparing all four legs against expected,
+// component-wise within tol, and records the result in the running tally.
+// A failure names the first leg that missed and prints both points: "the quad
+// did not match" on its own does not say which corner moved, which is the one
+// thing you need to know to tell a bad origin from a bad reflection.
+static void expect_quad_near(const char *what,
+                             const legQuad<vec<float>> &actual,
+                             const legQuad<vec<float>> &expected,
+                             float tol) {
+    struct Corner { const char *name; const vec<float> *got; const vec<float> *want; };
+    const Corner corners[] = {
+        { "frontLeft",  &actual.frontLeft,  &expected.frontLeft  },
+        { "frontRight", &actual.frontRight, &expected.frontRight },
+        { "backLeft",   &actual.backLeft,   &expected.backLeft   },
+        { "backRight",  &actual.backRight,  &expected.backRight  },
+    };
+
+    ++cases_run;
+    for (const Corner &c : corners) {
+        if (!vec_near(*c.got, *c.want, tol)) {
+            ++cases_failed;
+            ESP_LOGE(TAG, "FAIL  %-34s  %s got (%.4f, %.4f, %.4f), expected (%.4f, %.4f, %.4f)",
+                     what, c.name,
+                     (double)c.got->x,  (double)c.got->y,  (double)c.got->z,
+                     (double)c.want->x, (double)c.want->y, (double)c.want->z);
+            return;
+        }
+    }
+    ESP_LOGI(TAG, "PASS  %-34s  four legs within %g mm", what, (double)tol);
 }
 
 
@@ -219,6 +273,95 @@ bool test_only_vectors_are_zero(const IMU &imu) {
         && imu.accel_zero.x  == 0.0f && imu.accel_zero.y  == 0.0f && imu.accel_zero.z  == 0.0f;
 }
 
+// EFFECTS: Checks Transformer::transform against hand-computed results, for a
+// point sitting on each leg's origin and then for four offsets from it.
+//
+// transform does two separate things and only one of them is obvious. It
+// re-expresses each body-frame point in its own leg's frame (subtract that
+// leg's origin), and it then MIRRORS the right side across y, so both sides
+// can share a single IK solution. The mirror is the half that is easy to
+// forget, so the offsets below are picked to be closed under y reflection:
+// each one's expected right-leg result is another of the four. one <-> three
+// and two <-> four.
+//
+// NOTE: compared component-wise within TRANSFORM_TOL_MM, not with ==. The
+// arithmetic does happen to come out exact in binary32 for these particular
+// coordinates, but that is a coincidence of the numbers chosen and not a
+// property of transform -- swap in offsets that do not land on representable
+// sums and an exact comparison would start failing on rounding alone.
+static void test_transformer() {
+    const vec<float> offset_one   = { 50.0f,  25.0f, -100.0f};
+    const vec<float> offset_two   = {-50.0f,  25.0f, -100.0f};
+    const vec<float> offset_three = { 50.0f, -25.0f, -100.0f};
+    const vec<float> offset_four  = {-50.0f, -25.0f, -100.0f};
+
+    // Safe to build here: SpotServo's constructor only reads the calibration
+    // tables, so no I2C traffic is generated and no joint is commanded.
+    const SpotModel TPUP;
+    Transformer trans = Transformer(&TPUP);
+
+    legQuad<vec<float>> expected    = {};
+    legQuad<vec<float>> gait_output = global_leg_origins;
+
+    // Each leg origin maps to that leg's own frame origin, so all four fall to
+    // zero. The mirror is invisible here -- it only turns y into -0.0f.
+    trans.transform(gait_output);
+    expect_quad_near("transform at leg origins", trans.get_next_points(), expected,
+                     TRANSFORM_TOL_MM);
+
+    gait_output = global_leg_origins;
+    gait_output.frontLeft  = gait_output.frontLeft  + offset_one;
+    gait_output.frontRight = gait_output.frontRight + offset_one;
+    gait_output.backLeft   = gait_output.backLeft   + offset_one;
+    gait_output.backRight  = gait_output.backRight  + offset_one;
+    expected.frontLeft  = offset_one;
+    expected.frontRight = offset_three;   // offset_one reflected across y
+    expected.backLeft   = offset_one;
+    expected.backRight  = offset_three;
+    trans.transform(gait_output);
+    expect_quad_near("transform offset (+50,+25,-100)", trans.get_next_points(), expected,
+                     TRANSFORM_TOL_MM);
+
+    gait_output = global_leg_origins;
+    gait_output.frontLeft  = gait_output.frontLeft  + offset_two;
+    gait_output.frontRight = gait_output.frontRight + offset_two;
+    gait_output.backLeft   = gait_output.backLeft   + offset_two;
+    gait_output.backRight  = gait_output.backRight  + offset_two;
+    expected.frontLeft  = offset_two;
+    expected.frontRight = offset_four;    // offset_two reflected across y
+    expected.backLeft   = offset_two;
+    expected.backRight  = offset_four;
+    trans.transform(gait_output);
+    expect_quad_near("transform offset (-50,+25,-100)", trans.get_next_points(), expected,
+                     TRANSFORM_TOL_MM);
+
+    gait_output = global_leg_origins;
+    gait_output.frontLeft  = gait_output.frontLeft  + offset_three;
+    gait_output.frontRight = gait_output.frontRight + offset_three;
+    gait_output.backLeft   = gait_output.backLeft   + offset_three;
+    gait_output.backRight  = gait_output.backRight  + offset_three;
+    expected.frontLeft  = offset_three;
+    expected.frontRight = offset_one;     // offset_three reflected across y
+    expected.backLeft   = offset_three;
+    expected.backRight  = offset_one;
+    trans.transform(gait_output);
+    expect_quad_near("transform offset (+50,-25,-100)", trans.get_next_points(), expected,
+                     TRANSFORM_TOL_MM);
+
+    gait_output = global_leg_origins;
+    gait_output.frontLeft  = gait_output.frontLeft  + offset_four;
+    gait_output.frontRight = gait_output.frontRight + offset_four;
+    gait_output.backLeft   = gait_output.backLeft   + offset_four;
+    gait_output.backRight  = gait_output.backRight  + offset_four;
+    expected.frontLeft  = offset_four;
+    expected.frontRight = offset_two;     // offset_four reflected across y
+    expected.backLeft   = offset_four;
+    expected.backRight  = offset_two;
+    trans.transform(gait_output);
+    expect_quad_near("transform offset (-50,-25,-100)", trans.get_next_points(), expected,
+                     TRANSFORM_TOL_MM);
+}
+
 bool run_self_tests(IMU &imu) {
     cases_run    = 0;
     cases_failed = 0;
@@ -228,6 +371,7 @@ bool run_self_tests(IMU &imu) {
     IMUSelfTest::test_ang_conversion(imu);
     IMUSelfTest::test_accl_conversion(imu);
     test_limit_reachability();
+    test_transformer();
 
     if (cases_failed == 0) {
         ESP_LOGI(TAG, "==== %d/%d passed ====", cases_run, cases_run);

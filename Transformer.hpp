@@ -13,6 +13,9 @@
 class Transformer {
    private:
       const SpotModel * TPUP;
+
+      // contains all of the next points in the
+      // frame of reference of each leg, respectively
       legQuad<vec<float>> next_points_per_leg;
 
       void change_origin(vec<float> * position, LegType type);

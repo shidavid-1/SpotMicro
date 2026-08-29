@@ -2,10 +2,16 @@
 # so they are pulled in by relative path and the root is added as an include
 # directory.
 #
-# Deliberately NOT built for this testing session: IK.cpp, Filter.cpp,
-# Spot_Model.cpp, Transformer.cpp. They are still under construction and a
-# compile error in one of them would block the hardware tests, which do not
-# depend on any of them. Add them here as they stabilize.
+# Deliberately NOT built for this testing session: Filter.cpp. Its two static
+# helpers are called above their definitions, so it does not compile yet, and
+# nothing in the session needs it.
+#
+# IK.cpp, Spot_Model.cpp and Transformer.cpp used to sit on that list too. They
+# are in now because Self_Test.cpp's test_transformer exercises Transformer,
+# which pulls SpotModel::get_origins() out of Spot_Model.cpp, which pulls
+# position_to_angles() out of IK.cpp -- the whole chain has to link or the
+# session does not build. The tradeoff the old note was guarding against still
+# stands: a compile error in any of these three now blocks the hardware tests.
 
 idf_component_register(
     SRCS
@@ -15,6 +21,9 @@ idf_component_register(
         "../Common.cpp"
         "../IMU.cpp"
         "../Servo.cpp"
+        "../IK.cpp"
+        "../Spot_Model.cpp"
+        "../Transformer.cpp"
     INCLUDE_DIRS
         "."
         ".."
