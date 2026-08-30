@@ -72,9 +72,9 @@ Leg::Leg(LegType type, SpotServo hip, SpotServo shoulder, SpotServo knee)
 
 void Leg::move_to_pos(const vec<float> &pos, const int delay_ms) {
     triplet thetas = position_to_angles(pos).first;
-    hip.move_to_angle(-thetas.first + 90);
+    hip.move_to_angle(thetas.first);
     vTaskDelay(pdMS_TO_TICKS(delay_ms));
-    shoulder.move_to_angle(180 - thetas.third);
+    shoulder.move_to_angle(thetas.third);
     vTaskDelay(pdMS_TO_TICKS(delay_ms));
     knee.move_to_angle(thetas.second);
     vTaskDelay(pdMS_TO_TICKS(delay_ms));

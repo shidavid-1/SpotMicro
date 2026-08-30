@@ -233,7 +233,7 @@ void SpotServo::move_to_angle(float angle) {
             angle = lim.max;
         }
     }
-    
+        
     // Intermediate variable to keep track of 
     // computed pulse width in microseconds
     float diff_angle = 0;

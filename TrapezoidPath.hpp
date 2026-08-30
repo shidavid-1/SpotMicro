@@ -37,6 +37,9 @@ class TrapezoidPath {
             "top right" is the intersection of c and b
             "top left" is the intersection of c and d
 
+            Note that the datum is the robot's body datum rather than any particular
+            leg datum.
+
         */
         // Height is the distance between the bottom segment and the top segment
         // Base_width is the length of the bottom segment
@@ -44,6 +47,7 @@ class TrapezoidPath {
         // top_width = base_width * prop
         // Origin is the midpoint of the bottom segment, from which everything
         // else is defined relative to
+        // Note that in gaitcontroller, the origin is defined in the global reference frame
         // REQUIRES: prop > 0
         TrapezoidPath(vec<float> origin, float height, float base_width, float prop);
 
@@ -66,6 +70,7 @@ class TrapezoidPath {
         vec<float> get_bottomRight_point() const;
         vec<float> get_topRight_point() const;
         vec<float> get_topLeft_point() const;
+        std::vector<vec<float>> get_all_points() const;
 };
 
 #endif

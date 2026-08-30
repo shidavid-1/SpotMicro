@@ -45,6 +45,10 @@ $Sources = @(
     'TrapezoidPath.cpp'
 ) | ForEach-Object { Join-Path $RootDir $_ }
 
+# main.cpp defines app_main(), the signature ESP-IDF calls. A PC executable
+# needs main(), so this shim supplies one and calls straight through.
+$Sources += (Join-Path $SimDir 'sim_main.cpp')
+
 $Compiler = (Get-Command g++ -ErrorAction SilentlyContinue).Source
 if (-not $Compiler) {
     $Fallback = 'C:\msys64\mingw64\bin\g++.exe'
@@ -58,7 +62,9 @@ if (-not $Compiler) {
 # gnu++23 matches what ESP-IDF builds the firmware with. It is not optional:
 # Spot_Model.cpp uses aggregate class template argument deduction ('vec pos =
 # {...}'), which is C++20, and M_PI is only visible outside strict-ANSI mode.
-$Flags = @('-std=gnu++23', '-Wall', '-Wextra')
+# TPUP_CONTROL_LOOP picks the control-loop app_main in main.cpp. Without it
+# that function is preprocessed away and the link fails on a missing app_main.
+$Flags = @('-std=gnu++23', '-Wall', '-Wextra', '-DTPUP_CONTROL_LOOP')
 if ($DebugBuild) { $Flags += @('-g', '-O0') } else { $Flags += '-O2' }
 if ($RealTime) { $Flags += '-DSIM_REAL_TIME_DELAYS' }
 

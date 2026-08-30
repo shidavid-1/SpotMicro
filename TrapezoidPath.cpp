@@ -100,3 +100,7 @@ vec<float> TrapezoidPath::get_topLeft_point() const {
     return points.at(3);
 }
 
+std::vector<vec<float>> TrapezoidPath::get_all_points() const {
+    return points;
+}
+

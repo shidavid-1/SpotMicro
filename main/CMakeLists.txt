@@ -12,10 +12,22 @@
 # position_to_angles() out of IK.cpp -- the whole chain has to link or the
 # session does not build. The tradeoff the old note was guarding against still
 # stands: a compile error in any of these three now blocks the hardware tests.
+#
+# TrapezoidPath.cpp is here for the same reason: test_TrapezoidPath constructs
+# paths and calls percent_of_path, and the header alone does not define them.
+# Note that the sim build (sim/build_sim.ps1) keeps its own source list, so a
+# file added to one build is not automatically in the other.
+#
+# Both entry points are listed below. Each app_main is guarded on
+# TPUP_CONTROL_LOOP, which platformio.ini defines, so exactly one survives
+# preprocessing -- two definitions would not link. Drop the build_flags line
+# in platformio.ini to go back to the test session.
 
 idf_component_register(
     SRCS
-        "main.cpp"
+        "main.cpp"          # test-session app_main
+        "../main.cpp"       # control-loop app_main
+        "../Gait_Controller.cpp"
         "../Test_Session.cpp"
         "../Self_Test.cpp"
         "../Common.cpp"
@@ -24,6 +36,7 @@ idf_component_register(
         "../IK.cpp"
         "../Spot_Model.cpp"
         "../Transformer.cpp"
+        "../TrapezoidPath.cpp"
     INCLUDE_DIRS
         "."
         ".."

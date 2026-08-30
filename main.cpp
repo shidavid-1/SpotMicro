@@ -8,7 +8,20 @@
 #include "Filter.hpp"
 #include "Common.hpp"
 
-int main(int argc, char* argv[]) {
+// Selected by TPUP_CONTROL_LOOP (see platformio.ini). The other app_main
+// lives in main/main.cpp and runs the hardware test session; exactly one of
+// the two is compiled in, since two definitions would not link.
+#ifdef TPUP_CONTROL_LOOP
+
+extern "C" void app_main(void) {
+
+    // Must come first: every device on the bus depends on it.
+    init_i2c();
+
+    // Sets the PCA9685 prescaler for desired_pwm_freq. Without it the chip
+    // stays at its ~200 Hz power-on default and every pulse width is wrong.
+    init_pca9685();
+    vTaskDelay(pdMS_TO_TICKS(1));   // oscillator needs up to 500 us to settle
 
     // Create all objects:
 
@@ -19,7 +32,7 @@ int main(int argc, char* argv[]) {
     float height_of_body = 230.0f;
     float height_of_step = 30.0f;
     float length_of_stride = 50.0f;
-    float velocity_of_dog = 10.0f;
+    float velocity_of_dog = 100.0f;
     float duty_fact = 0.7;
     float proportion = 1.2;
 
@@ -48,10 +61,12 @@ int main(int argc, char* argv[]) {
 
         TPUP.move_all_servos(trans.get_next_points(), SERVO_DELAY_MS);
 
-        ESP_LOGI("TESTING", "Front Left: (%f, %f, %f)", trans.get_next_points_frontLeft().x, trans.get_next_points_frontLeft().y, trans.get_next_points_frontLeft().z);
+        //ESP_LOGI("TESTING", "Front Left: (%f, %f, %f)", trans.get_next_points_frontLeft().x, trans.get_next_points_frontLeft().y, trans.get_next_points_frontLeft().z);
         ++count;
 
         // Creates rough absolute deadlines for each loop iteration.
         vTaskDelayUntil(&initialTime, pdMS_TO_TICKS(12));
     }
 }
+
+#endif // TPUP_CONTROL_LOOP

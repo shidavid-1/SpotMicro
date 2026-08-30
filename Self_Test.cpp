@@ -2,9 +2,11 @@
 #include "Common.hpp"
 #include "Spot_Model.hpp"
 #include "Transformer.hpp"
+#include "TrapezoidPath.hpp"
 #include "esp_log.h"
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 static const char *TAG = "SELFTEST";
 
@@ -50,11 +52,79 @@ static void expect_true(const char *what, bool ok, const char *detail) {
 constexpr float TRANSFORM_TOL_MM = 1e-3f;
 
 
+// Tolerance for the trapezoid path checks, in mm.
+//
+// Absolute, for the same reasons as above: the coordinates are bounded (|x|
+// stays under 60 mm on the path shape) and several expected components are
+// exact zeros. The worst rounding in percent_of_path is at a segment
+// boundary, where (perimeter * percent - a) subtracts two nearly equal
+// numbers around 120 -- that cancellation is bounded by an ULP at 120, about
+// 8e-6 mm, spread over the segment that follows. 1e-3 mm sits well above it
+// and far below the failures this suite exists to catch, which are a segment
+// walked in the wrong direction or a dropped prop factor: wrong by tens of
+// millimetres.
+constexpr float TRAPEZOID_TOL_MM = 1e-3f;
+
+
 // EFFECTS: Returns true if every component of a is within tol of b.
 static bool vec_near(const vec<float> &a, const vec<float> &b, float tol) {
     return std::fabs(a.x - b.x) <= tol
         && std::fabs(a.y - b.y) <= tol
         && std::fabs(a.z - b.z) <= tol;
+}
+
+
+// EFFECTS: Logs a PASS/FAIL line comparing a single point against expected,
+// component-wise within tol, and records the result in the running tally.
+// Prints both points on failure -- for a point test, which component drifted
+// and by how much is the whole diagnosis.
+static void expect_vec_near(const char *what,
+                            const vec<float> &actual,
+                            const vec<float> &expected,
+                            float tol) {
+    ++cases_run;
+    if (vec_near(actual, expected, tol)) {
+        ESP_LOGI(TAG, "PASS  %-34s  (%.4f, %.4f, %.4f)",
+                 what, (double)actual.x, (double)actual.y, (double)actual.z);
+    }
+    else {
+        ++cases_failed;
+        ESP_LOGE(TAG, "FAIL  %-34s  got (%.4f, %.4f, %.4f), expected (%.4f, %.4f, %.4f)",
+                 what, (double)actual.x, (double)actual.y, (double)actual.z,
+                 (double)expected.x, (double)expected.y, (double)expected.z);
+    }
+}
+
+
+// EFFECTS: Logs a PASS/FAIL line comparing a trapezoid's four corners against
+// expected, in the constructor's order, and records ONE result for the set.
+// A failure names the first corner that missed, which is what separates a bad
+// prop (only the top two corners move) from a bad origin (all four move).
+static void expect_corners_near(const char *what,
+                                const std::vector<vec<float>> &actual,
+                                const std::vector<vec<float>> &expected,
+                                float tol) {
+    static const char *const names[] = { "bottomLeft", "bottomRight", "topRight", "topLeft" };
+    const size_t count = sizeof names / sizeof names[0];
+
+    ++cases_run;
+    if (actual.size() != count || expected.size() != count) {
+        ++cases_failed;
+        ESP_LOGE(TAG, "FAIL  %-34s  got %u corners, expected %u",
+                 what, (unsigned)actual.size(), (unsigned)expected.size());
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (!vec_near(actual.at(i), expected.at(i), tol)) {
+            ++cases_failed;
+            ESP_LOGE(TAG, "FAIL  %-34s  %s got (%.4f, %.4f, %.4f), expected (%.4f, %.4f, %.4f)",
+                     what, names[i],
+                     (double)actual.at(i).x,   (double)actual.at(i).y,   (double)actual.at(i).z,
+                     (double)expected.at(i).x, (double)expected.at(i).y, (double)expected.at(i).z);
+            return;
+        }
+    }
+    ESP_LOGI(TAG, "PASS  %-34s  four corners within %g mm", what, (double)tol);
 }
 
 
@@ -362,6 +432,130 @@ static void test_transformer() {
                      TRANSFORM_TOL_MM);
 }
 
+// EFFECTS: Checks TrapezoidPath's corner layout and its arc-length
+// parameterization against hand-computed values.
+//
+// Two separate things are under test here. The constructor places four corners
+// from (origin, height, base_width, prop): the base is base_width wide and
+// centred on the origin, the top edge sits height above it and is
+// base_width * prop wide, also centred. prop is therefore the only input that
+// moves the top two corners, and the three shapes below bracket it -- prop < 1
+// (a proper trapezoid), prop == 1 (a rectangle) and prop > 1 (a top edge that
+// overhangs the base). All three share an origin, height and base_width, so
+// the bottom two corners must come out identical across them; only the top
+// pair may move.
+//
+// percent_of_path then walks that outline by ARC LENGTH rather than by segment
+// index, which is the part that is easy to get subtly wrong. Equal steps in
+// percent are equal distances travelled, so the segment boundaries land at
+// cumulative-length fractions, NOT at 0.25 / 0.5 / 0.75 -- a check that only
+// sampled the quarter points would pass just as happily against a
+// per-segment-quarter implementation, so the cases below deliberately mix
+// boundary percents with mid-segment ones.
+static void test_TrapezoidPath() {
+    // Every percent case runs on this one. 120 wide by 40 tall with prop 0.5
+    // gives a 60 mm top edge and slanted sides of sqrt(30^2 + 40^2) = 50, so
+    // the side lengths are a = 120, b = 50, c = 60, d = 50 and the perimeter
+    // is a round 280. That makes the boundary fractions and every expected
+    // point below exact rather than approximate, which is why this shape and
+    // not the -100 mm one carries the parameterization cases.
+    TrapezoidPath percent_trap   = TrapezoidPath({0.0f, 0.0f,    0.0f}, 40.0f, 120.0f, 0.5f);
+
+    // The corner cases. Same origin, height and base for all three -- only
+    // prop differs, so the bottom corners are shared and the top edge comes
+    // out 80, 100 and 120 mm wide respectively.
+    TrapezoidPath short_side_up  = TrapezoidPath({0.0f, 5.0f, -100.0f}, 50.0f, 100.0f, 0.8f);
+    TrapezoidPath rectangle      = TrapezoidPath({0.0f, 5.0f, -100.0f}, 50.0f, 100.0f, 1.0f);
+    TrapezoidPath long_side_up   = TrapezoidPath({0.0f, 5.0f, -100.0f}, 50.0f, 100.0f, 1.2f);
+
+    // Order matches the constructor: bottom left (greatest x), bottom right,
+    // top right, top left. y is carried through from the origin untouched --
+    // the path is planar, so any y drift is a bug on its own.
+    const std::vector<vec<float>> expected_short = {
+        {50.0f, 5.0f, -100.0f}, {-50.0f, 5.0f, -100.0f}, {-40.0f, 5.0f, -50.0f}, {40.0f, 5.0f, -50.0f}};
+    const std::vector<vec<float>> expected_rectangle = {
+        {50.0f, 5.0f, -100.0f}, {-50.0f, 5.0f, -100.0f}, {-50.0f, 5.0f, -50.0f}, {50.0f, 5.0f, -50.0f}};
+    const std::vector<vec<float>> expected_long = {
+        {50.0f, 5.0f, -100.0f}, {-50.0f, 5.0f, -100.0f}, {-60.0f, 5.0f, -50.0f}, {60.0f, 5.0f, -50.0f}};
+
+    expect_corners_near("corners prop 0.8 (tapered)", short_side_up.get_all_points(),
+                        expected_short, TRAPEZOID_TOL_MM);
+    expect_corners_near("corners prop 1.0 (rectangle)", rectangle.get_all_points(),
+                        expected_rectangle, TRAPEZOID_TOL_MM);
+    expect_corners_near("corners prop 1.2 (overhanging)", long_side_up.get_all_points(),
+                        expected_long, TRAPEZOID_TOL_MM);
+
+    // --- the parameterization ------------------------------------------
+    //
+    // Three of the percents below (3/7, 17/28, 23/28) sit exactly on a segment
+    // boundary. Which side of the comparison they land on after rounding is
+    // not fixed, but it does not matter: the end of one segment and the start
+    // of the next are the same corner, so both branches agree and the case
+    // stays meaningful either way.
+
+    // Start of the cycle: the corner where d meets a, lowest z and greatest x.
+    expect_vec_near("path 0% (start corner)",
+                    percent_trap.percent_of_path(0.0f),
+                    {60.0f, 0.0f, 0.0f}, TRAPEZOID_TOL_MM);
+
+    // Mid-base. 0.25 * 280 = 70 mm along the 120 mm base, travelling -x from
+    // x = +60, so x = -10. Note this is NOT a quarter of the way along a --
+    // it is well past the middle of it, which is the whole point of measuring
+    // by arc length.
+    expect_vec_near("path 25% (on base a)",
+                    percent_trap.percent_of_path(0.25f),
+                    {-10.0f, 0.0f, 0.0f}, TRAPEZOID_TOL_MM);
+
+    // a / perimeter = 120/280 = 3/7: the corner where a meets b, base fully
+    // traversed and the climb not yet started.
+    expect_vec_near("path 3/7 (corner a->b)",
+                    percent_trap.percent_of_path(0.42857142857f),
+                    {-60.0f, 0.0f, 0.0f}, TRAPEZOID_TOL_MM);
+
+    // Climbing b. 0.5 * 280 = 140 mm, minus the 120 mm base leaves 20 mm into
+    // a 50 mm slant, i.e. 40% up it: x = -60 + 0.4 * 30 = -48, z = 0.4 * 40.
+    // Halfway through the cycle is only two fifths of the way up the first
+    // slant, which an implementation indexing by segment would get wrong.
+    expect_vec_near("path 50% (climbing b)",
+                    percent_trap.percent_of_path(0.5f),
+                    {-48.0f, 0.0f, 16.0f}, TRAPEZOID_TOL_MM);
+
+    // (a + b) / perimeter = 170/280 = 17/28: corner where b meets c, top of
+    // the climb.
+    expect_vec_near("path 17/28 (corner b->c)",
+                    percent_trap.percent_of_path(0.60714285714f),
+                    {-30.0f, 0.0f, 40.0f}, TRAPEZOID_TOL_MM);
+
+    // On the top edge. 0.75 * 280 = 210 mm, minus 170 leaves 40 mm into the
+    // 60 mm top edge. c runs in +x, opposite to a, so x = -30 + 40 = +10 --
+    // the sign here is what catches a top edge walked backwards.
+    expect_vec_near("path 75% (on top edge c)",
+                    percent_trap.percent_of_path(0.75f),
+                    {10.0f, 0.0f, 40.0f}, TRAPEZOID_TOL_MM);
+
+    // (a + b + c) / perimeter = 230/280 = 23/28: corner where c meets d, and
+    // the start of the descent.
+    expect_vec_near("path 23/28 (corner c->d)",
+                    percent_trap.percent_of_path(0.82142857142f),
+                    {30.0f, 0.0f, 40.0f}, TRAPEZOID_TOL_MM);
+
+    // Descending d. 25/28 * 280 = 250 mm, minus 230 leaves 20 mm into the
+    // 50 mm slant, 40% of the way down: x = 30 + 0.4 * 30 = 42,
+    // z = 40 - 0.4 * 40 = 24. The last case before the path closes back onto
+    // the start corner.
+    expect_vec_near("path 25/28 (descending d)",
+                    percent_trap.percent_of_path(0.89285714285f),
+                    {42.0f, 0.0f, 24.0f}, TRAPEZOID_TOL_MM);
+
+    // The base's share of the perimeter, which a gait splits into stance and
+    // swing. 120/280 = 3/7. It reads the same lengths the cases above walk, so
+    // a perimeter summed over the wrong sides shows up here as well as in the
+    // points.
+    expect_near("stance_fraction (120/280)",
+                percent_trap.stance_fraction(), 120.0f / 280.0f, 1e-6f);
+}
+
+
 bool run_self_tests(IMU &imu) {
     cases_run    = 0;
     cases_failed = 0;
@@ -372,6 +566,7 @@ bool run_self_tests(IMU &imu) {
     IMUSelfTest::test_accl_conversion(imu);
     test_limit_reachability();
     test_transformer();
+    test_TrapezoidPath();
 
     if (cases_failed == 0) {
         ESP_LOGI(TAG, "==== %d/%d passed ====", cases_run, cases_run);

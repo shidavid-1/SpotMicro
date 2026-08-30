@@ -7,6 +7,8 @@
 #include "Common.hpp"
 #include "Test_Session.hpp"
 
+#ifndef TPUP_CONTROL_LOOP
+
 extern "C" void app_main(void) {
     // Must come first: every device on the bus depends on it, and the IMU
     // constructor aborts if the bus is not up.
@@ -14,3 +16,5 @@ extern "C" void app_main(void) {
 
     run_test_session();
 }
+
+#endif // !TPUP_CONTROL_LOOP
