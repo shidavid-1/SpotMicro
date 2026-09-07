@@ -1826,6 +1826,28 @@ static void jog_servo_pwm() {
 }
 
 
+// Every command in the limits test is issued a degree at a time rather than in
+// one go. This test walks a joint deliberately INTO its own bound, and both
+// failures it exists to catch hurt most at speed: a bound set too wide drives
+// the leg into the body, and a broken clamp drives it straight past the bound.
+// Creeping up turns either one into something the operator sees and hears a
+// degree before it does damage, instead of a servo arriving at full swing.
+constexpr float LIMIT_STEP_MAX_DEG = 1.0f;
+
+// EFFECTS: How many commands a limits-test move to `target` should be split
+// into so no single one asks for more than LIMIT_STEP_MAX_DEG. Unlike
+// pose_steps_for this applies to EVERY joint type, not just hips: the pose ramp
+// exists to spare one heavily loaded joint, while this exists so the operator
+// can watch any joint approach a bound. 1 means no ramp, which is also the
+// answer when the session does not know where the joint is starting from and
+// so has nothing to interpolate.
+static int limit_steps_for(int n, float target) {
+    if (std::isnan(last_angle[n])) return 1;
+    const int steps = (int)std::ceil(std::fabs(target - last_angle[n]) / LIMIT_STEP_MAX_DEG);
+    return steps < 1 ? 1 : steps;
+}
+
+
 // T7: SpotServo validation #1 -- two separate claims per bound. First, that
 // the bound itself is a SAFE pose: nothing in one part of the body touching
 // anything in another, no pinched wires. Second, that commanding past the
@@ -1846,6 +1868,11 @@ static void test_spotservo_limits() {
            "a hand on the power switch and listen for buzzing.\n");
     printf("Run this BEFORE the protractor test: it is the one that protects\n"
            "the hardware.\n");
+    printf("Every move here CREEPS: %.0f deg per command, so a joint heading\n"
+           "somewhere it should not is something you can see coming and cut\n"
+           "power on, rather than a servo arriving at full swing. Long moves\n"
+           "take a while on purpose -- watch the joint, not the clock.\n",
+           (double)LIMIT_STEP_MAX_DEG);
     printf("\nWalking all twelve does not have to be finished in one go: q +\n"
            "Enter at ANY prompt below stops the walk where it is and goes\n"
            "straight to the verdict.\n");
@@ -1928,12 +1955,22 @@ static void test_spotservo_limits() {
                 continue;
             }
 
-            joint.move_to_angle(commands[k]);
-            // Where this joint now is, so the next pose can ramp back off the
-            // bound instead of snapping off it.
+            // A degree at a time, from wherever the session last left this
+            // joint. move_pose_angle puts every step through move_to_angle, so
+            // the clamp applies to each one exactly as it would to the single
+            // command this replaces -- including the steps that run past a
+            // bound, which is what makes a broken clamp show up as the joint
+            // creeping onward rather than lunging.
+            const int steps = limit_steps_for(num, commands[k]);
+            printf("      -> servo %d to %.1f deg (count %d, %.1f us), %d step%s"
+                   " of up to %.0f deg\n",
+                   num, (double)commands[k], m.final_count, (double)m.final_width,
+                   steps, steps == 1 ? "" : "s", (double)LIMIT_STEP_MAX_DEG);
+            move_pose_angle(joint, num, commands[k], steps);
+            // move_pose_angle records the angle it was ASKED for; past a bound
+            // that is not somewhere the joint can actually be. The effective
+            // angle is, and the next pose has to ramp off the real position.
             last_angle[num] = m.effective;
-            printf("      -> servo %d commanded %.1f deg (count %d, %.1f us)\n",
-                   num, (double)commands[k], m.final_count, (double)m.final_width);
             vTaskDelay(pdMS_TO_TICKS(800));
 
             if (is_bound[k]) {

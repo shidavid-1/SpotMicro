@@ -24,8 +24,8 @@
 AngleLimit limit_for(ServoType t) {
     switch (t) {
         case ServoType::hip:      return { -30.0f, 50.0f };
-        case ServoType::shoulder: return { -5.0f, 131.0f };
-        case ServoType::knee:     return { 20.0f, 176.0f };
+        case ServoType::shoulder: return { -5.0f, 135.0f };
+        case ServoType::knee:     return { 20.0f, 180.0f };
         case ServoType::free:     return {  0.0f, 180.0f };
     }
     __builtin_unreachable();
@@ -63,19 +63,19 @@ Calibration calibration_for(int num) {
 
 SpotCalibration spot_calibration_for(int num) {
     switch (num) {
-        case 0:  return {   0, ServoType::free };   // no meaningful center
-        case 1:  return { 319, ServoType::hip };
-        case 2:  return { 297, ServoType::shoulder };
-        case 3:  return { 292, ServoType::knee };
-        case 4:  return { 325, ServoType::hip };
-        case 5:  return { 288, ServoType::shoulder };
-        case 6:  return { 300, ServoType::knee };
-        case 7:  return { 304, ServoType::hip };
-        case 8:  return { 290, ServoType::shoulder };
-        case 9:  return { 312, ServoType::knee };
-        case 10: return { 326, ServoType::hip };
-        case 11: return { 283, ServoType::shoulder };
-        case 12: return { 303, ServoType::knee };
+        case 0 : return {    0, ServoType::free      };   // no meaningful center
+        case 1 : return {  314, ServoType::hip       };   // was 319
+        case 2 : return {  370, ServoType::shoulder  };   // was 297
+        case 3 : return {  272, ServoType::knee      };   // was 292
+        case 4 : return {  336, ServoType::hip       };   // was 325
+        case 5 : return {  247, ServoType::shoulder  };   // was 288
+        case 6 : return {  342, ServoType::knee      };   // was 300
+        case 7 : return {  316, ServoType::hip       };   // was 304
+        case 8 : return {  358, ServoType::shoulder  };   // was 290
+        case 9 : return {  260, ServoType::knee      };   // was 312
+        case 10: return {  308, ServoType::hip       };   // was 326
+        case 11: return {  259, ServoType::shoulder  };   // was 283
+        case 12: return {  356, ServoType::knee      };   // was 303
     }
     ESP_LOGI("ERROR MESSAGE", "Failed to construct servo: num %d is invalid.", num);
     exit(1);

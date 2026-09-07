@@ -47,7 +47,7 @@ extern "C" void app_main(void) {
 
     // Miscellanious Variables //
     legQuad<triplet<float>> all_leg_angles = {};
-    int SERVO_DELAY_MS = 2.0f;
+    int SERVO_DELAY_MS = 0.0f;
 
     TickType_t initialTime = xTaskGetTickCount();
 

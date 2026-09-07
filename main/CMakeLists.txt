@@ -19,9 +19,11 @@
 # file added to one build is not automatically in the other.
 #
 # Both entry points are listed below. Each app_main is guarded on
-# TPUP_CONTROL_LOOP, which platformio.ini defines, so exactly one survives
-# preprocessing -- two definitions would not link. Drop the build_flags line
-# in platformio.ini to go back to the test session.
+# TPUP_CONTROL_LOOP, so exactly one survives preprocessing -- two definitions
+# would not link. Which one is decided by the PlatformIO environment, not by
+# editing anything here: -e walk defines the flag (control loop in the root
+# main.cpp), -e test leaves it undefined (test session in main/main.cpp). See
+# the header comment in platformio.ini.
 
 idf_component_register(
     SRCS

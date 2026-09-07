@@ -84,11 +84,6 @@ static GaitParams validate_params(const GaitParams &p) {
       ESP_LOGE(TAG, "Stride length %.1f mm is below the %.1f mm minimum.", p.stride_length, MIN_STRIDE_LENGTH);
       abort();
    }
-   if (p.stride_length > MAX_STRIDE_LENGTH) {
-      ESP_LOGE(TAG, "Stride length %.1f mm exceeds the %.1f mm maximum; paths would collide.",
-               p.stride_length, MAX_STRIDE_LENGTH);
-      abort();
-   }
 
    if (p.velocity <= MIN_VELOCITY) {
       ESP_LOGE(TAG, "Velocity %.1f mm/s is at or below the %.1f mm/s minimum.", p.velocity, MIN_VELOCITY);

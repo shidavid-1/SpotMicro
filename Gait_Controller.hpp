@@ -18,8 +18,7 @@
 // all values in mm
 constexpr float MAX_BODY_HEIGHT = 500.0f;    // max height of body origin above ground
 constexpr float MAX_STEP_HEIGHT = 500.0f;    // max step height
-constexpr float MAX_STRIDE_LENGTH = 300.0f;  // max length of stride before paths collide
-constexpr float MAX_VELOCITY = 100.0f;       // mm/s
+constexpr float MAX_VELOCITY = 150.0f;       // mm/s
 
 constexpr float MIN_BODY_HEIGHT = 10.0f;    // max height of body origin above ground
 constexpr float MIN_STEP_HEIGHT = 10.0f;    // max step height

@@ -1,10 +1,67 @@
 {
     "version": "2.0.0",
+
+    // Firmware tasks come in matched Walk/Test pairs. The only difference
+    // between them is the PlatformIO environment (-e walk / -e test), which
+    // is what selects the app_main -- see the header comment in
+    // platformio.ini. Nothing has to be edited to switch modes.
     "tasks": [
+        {
+            "label": "Walk: Upload & Monitor",
+            "detail": "Build the gait control loop (root main.cpp), flash it, open the serial monitor.",
+            "type": "shell",
+            "command": "${env:USERPROFILE}/.platformio/penv/Scripts/pio.exe",
+            "args": ["run", "-e", "walk", "-t", "upload", "-t", "monitor"],
+            "group": "build",
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+        },
+        {
+            "label": "Test: Upload & Monitor",
+            "detail": "Build the hardware test session (main/main.cpp), flash it, open the serial monitor.",
+            "type": "shell",
+            "command": "${env:USERPROFILE}/.platformio/penv/Scripts/pio.exe",
+            "args": ["run", "-e", "test", "-t", "upload", "-t", "monitor"],
+            // The session reads keystrokes, so the monitor needs its own
+            // terminal that is not shared with a build.
+            "group": "build",
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+        },
+        {
+            "label": "Walk: Build only",
+            "detail": "Compile the gait control loop without flashing.",
+            "type": "shell",
+            "command": "${env:USERPROFILE}/.platformio/penv/Scripts/pio.exe",
+            "args": ["run", "-e", "walk"],
+            "group": "build",
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "Test: Build only",
+            "detail": "Compile the hardware test session without flashing.",
+            "type": "shell",
+            "command": "${env:USERPROFILE}/.platformio/penv/Scripts/pio.exe",
+            "args": ["run", "-e", "test"],
+            "group": "build",
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "Firmware: Monitor only",
+            "detail": "Attach the serial monitor without rebuilding or flashing.",
+            "type": "shell",
+            "command": "${env:USERPROFILE}/.platformio/penv/Scripts/pio.exe",
+            "args": ["device", "monitor"],
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+        },
         {
             // Host simulation build: compiles the root main.cpp control loop
             // against the shim headers in sim/. Separate from the PlatformIO /
-            // ESP-IDF firmware build, whose entry point is main/main.cpp.
+            // ESP-IDF firmware build above; it has no test-session counterpart
+            // because the test session drives real hardware (I2C, servos).
             "label": "Sim: Build",
             "type": "shell",
             "command": "powershell.exe",
