@@ -53,7 +53,7 @@ extern "C" void app_main(void) {
 
     int count = 0;
 
-    while (count < 5000) {
+    while (count < 2000) {
         controller.compute_next_points();
         controller.increment_phi();
 
