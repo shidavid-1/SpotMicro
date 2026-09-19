@@ -29,10 +29,10 @@ extern "C" void app_main(void) {
     SpotModel TPUP;
 
     // Gait Parameters //
-    float height_of_body = 230.0f;
-    float height_of_step = 30.0f;
+    float height_of_body = 260.0f;
+    float height_of_step = 15.0f;
     float length_of_stride = 50.0f;
-    float velocity_of_dog = 100.0f;
+    float velocity_of_dog = 50.0f;
     float duty_fact = 0.7;
     float proportion = 1.2;
 
