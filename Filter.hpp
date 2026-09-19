@@ -6,9 +6,24 @@
 #include "Common.hpp"
 #include "Spot_Model.hpp"
 
-const float alpha = 0.98;
+class Filter {
+    private:
+        const float Tau;
+        float alpha;
+        float dt;              // in seconds
+        float curr_time_stamp; // in microseconds
+        float prev_time_stamp; // in microseconds
+        float grav_threshold;
 
-// Updates orientation in TPUP and returns acceleration as a vec<Float>
-vec<float> filter_IMU_data(SpotModel * TPUP, const vec<float> angvel, const vec<float> accel);
+        vec<float> calculate_orientation(const SpotModel * TPUP, const vec<float> angvel, const vec<float> accel);
+        vec<float> calculate_acceleration(const vec<float> ori, const vec<float> accel);
+        void update_alpha_dt();
+        
+    public:
+        Filter(const float &T, const float &dt, const float &grav_threshold);
+
+        // Updates orientation in TPUP and returns acceleration as a vec<Float>
+        vec<float> filter_IMU_data(SpotModel * TPUP, const vec<float> angvel, const vec<float> accel);
+};
 
 #endif

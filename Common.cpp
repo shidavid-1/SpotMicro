@@ -49,8 +49,12 @@ esp_err_t write_to_reg(uint8_t addr, uint8_t reg, uint8_t data) {
     return valid_connection;
 }
 
-float distance_between(const vec<float> lhs, const vec<float> rhs) {
+float distance_between(const vec<float> &lhs, const vec<float> &rhs) {
     return (float)sqrt(pow(lhs.x - rhs.x, 2) + pow(lhs.y - rhs.y, 2) + pow(lhs.z - rhs.z, 2));
+}
+
+float magnitude(const vec<float> &my_vec) {
+    return (float) (my_vec.x * my_vec.x + my_vec.y * my_vec.y + my_vec.z * my_vec.z);
 }
 
 // Operator Overloads //
