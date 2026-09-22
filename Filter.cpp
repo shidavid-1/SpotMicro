@@ -10,9 +10,8 @@
 using namespace std;
 
 Filter::Filter(const float &T, const float &del_t, const float &threshold) 
-    : Tau(T), alpha(0.0f), dt(del_t), 
-      prev_time_stamp(0.0f), curr_time_stamp(0.0f),
-      grav_threshold(threshold) {
+    : Tau(T), alpha(0.0f), dt(del_t), grav_threshold(threshold),
+      prev_time_stamp(0.0f), curr_time_stamp(0.0f) {
     if (Tau > 0.0f) {
         alpha = exp(-dt / Tau);
     }
@@ -25,7 +24,10 @@ Filter::Filter(const float &T, const float &del_t, const float &threshold)
 void Filter::update_alpha_dt() {
     prev_time_stamp = curr_time_stamp;
     curr_time_stamp = esp_timer_get_time();
-    dt = (curr_time_stamp - prev_time_stamp) / (10^6);
+    if (prev_time_stamp == 0) {
+        prev_time_stamp = curr_time_stamp;
+    }
+    dt = (curr_time_stamp - prev_time_stamp) / (1e6f);
     alpha = exp(-dt / Tau);
 }
 
@@ -43,7 +45,7 @@ vec<float> Filter::calculate_orientation(const SpotModel * TPUP, const vec<float
     // y is pitch
     new_orientation.y = angvel.y * dt + TPUP->get_orientation().y;
 
-    if (magnitude(accel) - gravity < grav_threshold) {
+    if (fabs(magnitude(accel) - gravity) < grav_threshold) {
         new_orientation.x *= alpha;
         new_orientation.x += (1 - alpha) * ((float)atan2(accel.y, accel.z) / RAD_PER_DEG);
 

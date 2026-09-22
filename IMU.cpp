@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <vector>
 #include <cstdint>
 
 //////////////////// IMU ////////////////////
@@ -54,11 +55,31 @@ IMU::IMU(AngularRange angRange, AccelRange acclRange)
 // When called, updates the IMU readings, then stores the readings
 // immediately after the update as the zero values for accel and angvel.
 void IMU::calibrate() {
-    update();
-    angvel_zero = angvel;
-    accel_zero.x = accel.x;
-    accel_zero.y = accel.y;
-    accel_zero.z = accel.z - gravity;
+    vec<float> angvel_sum;
+    vec<float> accel_sum;
+    vec<float> angvel_avg;
+    vec<float> accel_avg;
+    uint32_t loop_iterations = 10000;
+    for (uint32_t i = 0; i < loop_iterations; ++i) {
+        reset_calibration();
+        update();
+        angvel_sum = angvel_sum + angvel;
+        accel_sum = accel_sum + accel;
+    }
+
+    // Compute averages:
+    angvel_avg.x = angvel_sum.x / loop_iterations;
+    angvel_avg.y = angvel_sum.y / loop_iterations;
+    angvel_avg.z = angvel_sum.z / loop_iterations;
+    accel_avg.x = accel_sum.x / loop_iterations;
+    accel_avg.y = accel_sum.y / loop_iterations;
+    accel_avg.z = accel_sum.z / loop_iterations;
+
+    angvel_zero = angvel_avg;
+    accel_zero.x = accel_avg.x;
+    accel_zero.y = accel_avg.y;
+    accel_zero.z = accel_avg.z - gravity;
+        
 }
 
 void IMU::reset_calibration() {

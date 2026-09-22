@@ -3,11 +3,14 @@
 #include "Common.hpp"
 #include "IMU.hpp"
 #include "Servo.hpp"
+#include "Spot_Model.hpp"
+#include "Filter.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_app_desc.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_timer.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +58,16 @@ constexpr int REPEAT_BLOCK_SIZE   = 100;
 constexpr int REPEAT_NUM_BLOCKS   = 3;
 constexpr int REPEAT_DELAY_MS     = 100;  // between consecutive commands
 constexpr int REPEAT_PROGRESS_EVERY = 10; // print a progress line this often
+
+// IMU + filter playground. Starting points to tune, not values from the plan.
+constexpr float FILTER_TAU          = 0.5f;  // s, complementary filter time constant
+constexpr float FILTER_GRAV_THRESH  = 0.5f;  // m/s^2, max | |a| - g | to trust accel
+// Print one line every FILTER_PRINT_MS (2 per second). Converted to a loop
+// count so it follows control_frequency. A line is ~100 chars, about 9 ms at
+// 115200 baud, so printing every iteration would back up the UART.
+constexpr int   FILTER_PRINT_MS     = 500;
+constexpr int   FILTER_PRINT_EVERY  = FILTER_PRINT_MS / control_period_ms > 0
+                                    ? FILTER_PRINT_MS / control_period_ms : 1;
 
 
 //////////////////// CONSOLE HELPERS ////////////////////
@@ -2252,6 +2265,180 @@ static void test_spotservo_protractor() {
 }
 
 
+//////////////////// IMU + FILTER PLAYGROUND ////////////////////
+
+// What the playground prints each line. Every view shows the IMU's own
+// readings (binary_to_float output, calibration zeros subtracted, nothing
+// else) next to what the filter made of them.
+enum class PlaygroundView { angle, accel, both };
+
+// EFFECTS: Maps o / a / b to a view. Returns false for any other key.
+static bool view_for_key(int c, PlaygroundView *out) {
+    switch (c) {
+        case 'o': case 'O': *out = PlaygroundView::angle; return true;
+        case 'a': case 'A': *out = PlaygroundView::accel; return true;
+        case 'b': case 'B': *out = PlaygroundView::both;  return true;
+    }
+    return false;
+}
+
+// EFFECTS: Asks which view to start in. A blank line picks both.
+static PlaygroundView ask_playground_view() {
+    printf("\n    Views:\n");
+    printf("      o  angle: filter roll/pitch/yaw, accel-only tilt, gyro dps\n");
+    printf("      a  accel: filter linear accel (gravity removed), raw accel, |a|\n");
+    printf("      b  both:  everything above in one line\n");
+    char line[8];
+    for (;;) {
+        printf("    Start in which view? (o/a/b, Enter = b): ");
+        read_line(line, sizeof line);
+        if (line[0] == '\0') return PlaygroundView::both;
+        PlaygroundView v;
+        if (view_for_key(line[0], &v)) return v;
+        printf("    ! Type o, a or b.\n");
+    }
+}
+
+// EFFECTS: Roll and pitch from the accelerometer alone, in degrees. The same
+// formulas Filter::calculate_orientation blends in, so the angle view can
+// show both of the filter's inputs side by side with its output.
+static void accel_tilt(const vec<float> &a, float *roll, float *pitch) {
+    *roll  = atan2f(a.y, a.z) / RAD_PER_DEG;
+    *pitch = atan2f(-a.x, sqrtf(a.z * a.z + a.y * a.y)) / RAD_PER_DEG;
+}
+
+// EFFECTS: Prints the two header lines (names, then units) for `view`.
+static void print_playground_header(PlaygroundView view) {
+    const bool ang = view != PlaygroundView::accel;
+    const bool acc = view != PlaygroundView::angle;
+
+    printf("\n    ");
+    if (ang) printf("%7s %7s %7s | %7s %7s | %7s %7s %7s | ",
+                    "roll", "pitch", "yaw", "a roll", "a pitch", "gx", "gy", "gz");
+    if (acc) printf("%7s %7s %7s | %7s %7s %7s | %6s | ",
+                    "lin ax", "lin ay", "lin az", "ax", "ay", "az", "|a|");
+    if (ang) printf("%4s | ", "gate");
+    printf("%5s\n", "dt");
+
+    printf("    ");
+    if (ang) printf("%7s %7s %7s | %7s %7s | %7s %7s %7s | ",
+                    "(deg)", "(deg)", "(deg)", "(deg)", "(deg)", "(dps)", "(dps)", "(dps)");
+    if (acc) printf("%7s %7s %7s | %7s %7s %7s | %6s | ",
+                    "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)");
+    if (ang) printf("%4s | ", "");
+    printf("%5s\n", "(ms)");
+}
+
+// EFFECTS: Prints one line for `view`. `angvel` and `accel` are the IMU's
+// readings as handed to the filter; `ori` and `lin_accel` are its outputs.
+// "gate" is Y when |a| is within FILTER_GRAV_THRESH of g, i.e. when the
+// filter is blending the accel tilt in this sample, and N when it is
+// integrating the gyro alone.
+static void print_playground_row(PlaygroundView view, const vec<float> &ori,
+                                 const vec<float> &angvel, const vec<float> &lin_accel,
+                                 const vec<float> &accel, float loop_dt_ms) {
+    const bool ang = view != PlaygroundView::accel;
+    const bool acc = view != PlaygroundView::angle;
+    const float a_mag = magnitude(accel);
+
+    printf("    ");
+    if (ang) {
+        float a_roll, a_pitch;
+        accel_tilt(accel, &a_roll, &a_pitch);
+        printf("%7.2f %7.2f %7.2f | %7.2f %7.2f | %7.2f %7.2f %7.2f | ",
+               (double)ori.x, (double)ori.y, (double)ori.z,
+               (double)a_roll, (double)a_pitch,
+               (double)angvel.x, (double)angvel.y, (double)angvel.z);
+    }
+    if (acc) {
+        printf("%7.3f %7.3f %7.3f | %7.3f %7.3f %7.3f | %6.3f | ",
+               (double)lin_accel.x, (double)lin_accel.y, (double)lin_accel.z,
+               (double)accel.x, (double)accel.y, (double)accel.z, (double)a_mag);
+    }
+    if (ang) printf("%4s | ", fabsf(a_mag - gravity) < FILTER_GRAV_THRESH ? "Y" : "N");
+    printf("%5.2f\n", (double)loop_dt_ms);
+}
+
+// A sandbox for exercising the IMU and the complementary filter by hand, not
+// a test: nothing is judged and no verdict is recorded, so the results table
+// is never touched. Calibrates the session's IMU, then runs a loop at the
+// control-loop period, feeding every sample through the Filter and printing
+// the orientation and gravity-free acceleration it produces.
+static void imu_filter_playground() {
+    printf("\n--- IMU + filter playground (no verdict) ---\n");
+    printf("Calibrates the IMU, then samples it every %d ms (control_frequency\n"
+           "%.2f Hz) until you press q or Esc. No verdict is recorded.\n",
+           control_period_ms, (double)control_frequency);
+
+    // Everything the IMU needs: the bus is already up (app_main), and the
+    // first imu_instance() call constructs, WHO_AM_I-checks and configures it.
+    IMU &imu = imu_instance();
+    // The ctor-zeroed state (test 1) is no longer observable after this.
+    imu_dirtied = true;
+
+    // Holds the orientation the filter writes. Constructing it builds the
+    // servo objects only; nothing is commanded, so no joint moves.
+    SpotModel TPUP;
+
+    wait_for_enter("Hold the IMU LEVEL and STILL");
+
+    // calibrate() captures readings with the current zeros already
+    // subtracted, so clear any left over from test 3 or an earlier run.
+    imu.reset_calibration();
+    imu.calibrate();
+    printf("    Calibration complete.\n");
+
+    PlaygroundView view = ask_playground_view();
+
+    // The first filter_IMU_data call measures a gap since boot, which
+    // update_alpha_dt() treats as a stall (> 1 s) and turns into dt = 0.
+    Filter filter(FILTER_TAU, ideal_dt, FILTER_GRAV_THRESH);
+    printf("\n    Filter: tau %.2f s, gravity threshold %.2f m/s^2, printing every %d ms\n",
+           (double)FILTER_TAU, (double)FILTER_GRAV_THRESH,
+           FILTER_PRINT_EVERY * control_period_ms);
+    printf("    Running -- o / a / b switch view, q or Esc returns to the menu.\n");
+    print_playground_header(view);
+
+    TickType_t last_wake = xTaskGetTickCount();
+    int64_t prev_us = esp_timer_get_time();
+    for (int i = 0; ; ++i) {
+        // Non-blocking key check. read_char_timeout() would sleep 10 ms on
+        // every empty poll and stretch the loop period.
+        const int c = fgetc(stdin);
+        if (c == EOF) clearerr(stdin);
+        else if (c == 'q' || c == 'Q' || c == 0x1B) break;
+        else {
+            PlaygroundView next;
+            if (view_for_key(c, &next) && next != view) {
+                view = next;
+                print_playground_header(view);
+            }
+        }
+
+        imu.update();
+        const vec<float> angvel = imu.get_angvel();   // dps, calibrated
+        const vec<float> accel  = imu.get_accel();    // m/s^2, calibrated
+
+        const vec<float> lin_accel = filter.filter_IMU_data(&TPUP, angvel, accel);
+        const vec<float> ori = TPUP.get_orientation();
+
+        // Measured here rather than read out of Filter (dt is private), so
+        // it shows whether the loop is actually holding control_period_ms.
+        const int64_t now_us = esp_timer_get_time();
+        const float loop_dt_ms = (now_us - prev_us) / 1000.0f;
+        prev_us = now_us;
+
+        if (i % FILTER_PRINT_EVERY == 0) {
+            print_playground_row(view, ori, angvel, lin_accel, accel, loop_dt_ms);
+        }
+
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(control_period_ms));
+    }
+
+    printf("\n    Stopped.\n");
+}
+
+
 //////////////////// REPEAT-TO-ZERO DIAGNOSTIC ////////////////////
 
 // Repeat-to-zero endurance. Commands one servo to 0 degrees REPEAT_BLOCK_SIZE
@@ -2395,6 +2582,7 @@ static void print_menu() {
     printf("  j) jog PWM counts / set a servo center (no verdict)\n");
     printf("  z) servo repeat-to-zero endurance (%d x %d, no verdict)\n",
            REPEAT_NUM_BLOCKS, REPEAT_BLOCK_SIZE);
+    printf("  f) IMU + filter playground (no verdict)\n");
     printf("  s) summary (Markdown, ready to paste)\n");
     printf("  m) mark results by hand (no test run -- for lost records)\n");
     printf("  r) reset ONE test result\n");
@@ -2468,6 +2656,7 @@ void run_test_session() {
         if (line[0] == 'p') { center_all_servos(); continue; }
         if (line[0] == 'j') { jog_servo_pwm(); continue; }
         if (line[0] == 'z') { diagnostic_servo_repeat_zero(); continue; }
+        if (line[0] == 'f') { imu_filter_playground(); continue; }
         if (line[0] == 'm') { mark_results_by_hand(); continue; }
         if (line[0] == 'r') {
             const int which = ask_int("Which test to reset", 0, NUM_TESTS - 1);

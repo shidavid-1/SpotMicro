@@ -65,7 +65,7 @@ extern "C" void app_main(void) {
         ++count;
 
         // Creates rough absolute deadlines for each loop iteration.
-        vTaskDelayUntil(&initialTime, pdMS_TO_TICKS(12));
+        vTaskDelayUntil(&initialTime, pdMS_TO_TICKS(control_period_ms));
     }
 }
 

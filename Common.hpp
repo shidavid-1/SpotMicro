@@ -14,7 +14,9 @@
 
 // Constants //
 constexpr float control_frequency = 83.33333333333333333333333333333f; // Hz
-constexpr float ideal_dt = 1.0f/control_frequency;
+constexpr float ideal_dt = 1.0f/control_frequency; // in s
+// Control loop period, rounded to whole ms for vTaskDelayUntil.
+constexpr int control_period_ms = (int)(ideal_dt * 1000.0f + 0.5f);
 constexpr gpio_num_t sda_pin = GPIO_NUM_11;
 constexpr gpio_num_t scl_pin = GPIO_NUM_12;
 constexpr i2c_port_t i2c_port = I2C_NUM_0;

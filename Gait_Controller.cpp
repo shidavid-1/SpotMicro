@@ -147,7 +147,7 @@ GaitController::GaitController(GaitParams p)
 
 void GaitController::update_timing() {
    gait_period = params.stride_length / (params.velocity * params.duty_factor);
-   phi_increment = dt / gait_period;
+   phi_increment = ideal_dt / gait_period;
 }
 
 void GaitController::set_params(GaitParams p) {
