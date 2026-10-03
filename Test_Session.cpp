@@ -60,7 +60,6 @@ constexpr int REPEAT_DELAY_MS     = 100;  // between consecutive commands
 constexpr int REPEAT_PROGRESS_EVERY = 10; // print a progress line this often
 
 // IMU + filter playground. Starting points to tune, not values from the plan.
-constexpr float FILTER_TAU          = 0.5f;  // s, complementary filter time constant
 constexpr float FILTER_GRAV_THRESH  = 0.5f;  // m/s^2, max | |a| - g | to trust accel
 // Print one line every FILTER_PRINT_MS (2 per second). Converted to a loop
 // count so it follows control_frequency. A line is ~100 chars, about 9 ms at
@@ -68,6 +67,53 @@ constexpr float FILTER_GRAV_THRESH  = 0.5f;  // m/s^2, max | |a| - g | to trust 
 constexpr int   FILTER_PRINT_MS     = 500;
 constexpr int   FILTER_PRINT_EVERY  = FILTER_PRINT_MS / control_period_ms > 0
                                     ? FILTER_PRINT_MS / control_period_ms : 1;
+
+// IMU static test. Not from the plan: the bound is how far the fused
+// roll/pitch may sit from the accelerometer-only roll/pitch, and the duration
+// matches the longest the dog is expected to walk in one go.
+constexpr float ANGULAR_ERROR_BOUND = 0.5f;               // deg
+constexpr int   TRACKING_TEST_MS    = 2 * 60 * 1000;      // 2 minutes
+
+// The static test compares the fused angle against the accelerometer's tilt
+// AVERAGED over this window, not against a single sample.
+//
+// WHY: the first version compared against the single-sample accel tilt and
+// failed within the first second even with the IMU sitting still. That is
+// sensor noise, not a software fault. The MPU-6050's accel noise density is
+// ~400 ug/sqrt(Hz), and config_IMU() leaves the on-chip low-pass filter at
+// its default (DLPF_CFG = 0, ~260 Hz bandwidth), so one sample carries
+// ~8 mg RMS of noise -- roughly 0.4-0.5 deg RMS of roll/pitch, with peaks well
+// past 1 deg. The fused angle (tau 4.26 s) barely reacts to that noise, so
+// the per-sample difference was mostly the noise itself. Against a 0.5 deg
+// bound, even a PERFECT filter could not pass the old version of this test.
+//
+// A test has to measure against a STABLE reference: one that is much more
+// precise than the tolerance it checks, so a correct implementation passes
+// and only a faulty one fails. The single-sample accel tilt is not stable
+// (sigma ~0.45 deg against a 0.5 deg bound), and the bound is a requirement,
+// so rather than widen it the reference is made stable by averaging. Only the
+// reference is averaged -- the fused angle under test is untouched -- and the
+// faults this test exists to catch (gyro bias, drift, a gate that never
+// opens) are slow and persistent, so they survive the averaging while the
+// random noise cancels.
+//
+// Sizing: averaging N samples cuts the noise by sqrt(N). A run checks ~10000
+// samples and ONE miss fails it, so what matters is the worst sample, not the
+// typical one: the false-fail chance is roughly
+//     (independent samples) * P(|z| > bound / sigma_avg)
+// from a two-tailed z-table. Consecutive moving averages overlap, so ~10000/N
+// of them are effectively independent. At 200 ms (16 samples at
+// control_frequency): sigma_avg ~0.11 deg, z ~4.4, P ~1e-5, ~625 independent
+// -> roughly 0.5% chance a perfect implementation fails a 2-minute run.
+// Statically, the window costs nothing but a 200 ms warm-up.
+//
+// Both this window and ANGULAR_ERROR_BOUND are placeholders picked from
+// datasheet numbers (sigma above is an estimate, not a measurement); replace
+// them with values derived from noise data logged on the assembled dog once
+// that data exists.
+constexpr int   ACCEL_TILT_AVG_MS      = 200;
+constexpr int   ACCEL_TILT_AVG_SAMPLES = ACCEL_TILT_AVG_MS / control_period_ms > 0
+                                       ? ACCEL_TILT_AVG_MS / control_period_ms : 1;
 
 
 //////////////////// CONSOLE HELPERS ////////////////////
@@ -215,6 +261,7 @@ static TestRecord records[] = {
     { "Servo::move_to_pwm (scoped)",       Result::not_run, "" },  // 6
     { "SpotServo #1: limit saturation",    Result::not_run, "" },  // 7
     { "SpotServo #2: protractor angles",   Result::not_run, "" },  // 8
+    { "STATIC TEST",                       Result::not_run, "" },  // 9
 };
 constexpr int NUM_TESTS = sizeof(records) / sizeof(records[0]);
 
@@ -259,7 +306,7 @@ static const char *NVS_KEY       = "results";
 
 // Bump when the layout of PersistedRecord or the test list changes, so stale
 // blobs from an older firmware are discarded rather than misread.
-constexpr uint8_t PERSIST_VERSION = 3;
+constexpr uint8_t PERSIST_VERSION = 4;
 
 struct PersistedBlob {
     uint8_t version;
@@ -2307,36 +2354,47 @@ static void accel_tilt(const vec<float> &a, float *roll, float *pitch) {
     *pitch = atan2f(-a.x, sqrtf(a.z * a.z + a.y * a.y)) / RAD_PER_DEG;
 }
 
-// EFFECTS: Prints the two header lines (names, then units) for `view`.
-static void print_playground_header(PlaygroundView view) {
+// EFFECTS: Prints the column names (units == false) or units (units == true)
+// for `view`, without the trailing newline, so a caller can append columns.
+static void print_playground_header_cells(PlaygroundView view, bool units) {
     const bool ang = view != PlaygroundView::accel;
     const bool acc = view != PlaygroundView::angle;
 
-    printf("\n    ");
-    if (ang) printf("%7s %7s %7s | %7s %7s | %7s %7s %7s | ",
-                    "roll", "pitch", "yaw", "a roll", "a pitch", "gx", "gy", "gz");
-    if (acc) printf("%7s %7s %7s | %7s %7s %7s | %6s | ",
-                    "lin ax", "lin ay", "lin az", "ax", "ay", "az", "|a|");
-    if (ang) printf("%4s | ", "gate");
-    printf("%5s\n", "dt");
-
     printf("    ");
-    if (ang) printf("%7s %7s %7s | %7s %7s | %7s %7s %7s | ",
-                    "(deg)", "(deg)", "(deg)", "(deg)", "(deg)", "(dps)", "(dps)", "(dps)");
-    if (acc) printf("%7s %7s %7s | %7s %7s %7s | %6s | ",
-                    "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)");
-    if (ang) printf("%4s | ", "");
-    printf("%5s\n", "(ms)");
+    if (!units) {
+        if (ang) printf("%7s %7s %7s | %7s %7s | %7s %7s %7s | ",
+                        "roll", "pitch", "yaw", "a roll", "a pitch", "gx", "gy", "gz");
+        if (acc) printf("%7s %7s %7s | %7s %7s %7s | %6s | ",
+                        "lin ax", "lin ay", "lin az", "ax", "ay", "az", "|a|");
+        if (ang) printf("%4s | ", "gate");
+        printf("%5s", "dt");
+    } else {
+        if (ang) printf("%7s %7s %7s | %7s %7s | %7s %7s %7s | ",
+                        "(deg)", "(deg)", "(deg)", "(deg)", "(deg)", "(dps)", "(dps)", "(dps)");
+        if (acc) printf("%7s %7s %7s | %7s %7s %7s | %6s | ",
+                        "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)", "(m/s2)");
+        if (ang) printf("%4s | ", "");
+        printf("%5s", "(ms)");
+    }
 }
 
-// EFFECTS: Prints one line for `view`. `angvel` and `accel` are the IMU's
-// readings as handed to the filter; `ori` and `lin_accel` are its outputs.
-// "gate" is Y when |a| is within FILTER_GRAV_THRESH of g, i.e. when the
-// filter is blending the accel tilt in this sample, and N when it is
-// integrating the gyro alone.
-static void print_playground_row(PlaygroundView view, const vec<float> &ori,
-                                 const vec<float> &angvel, const vec<float> &lin_accel,
-                                 const vec<float> &accel, float loop_dt_ms) {
+// EFFECTS: Prints the two header lines (names, then units) for `view`.
+static void print_playground_header(PlaygroundView view) {
+    printf("\n");
+    print_playground_header_cells(view, false);
+    printf("\n");
+    print_playground_header_cells(view, true);
+    printf("\n");
+}
+
+// EFFECTS: Prints one line's cells for `view`, without the trailing newline,
+// so a caller can append columns. `angvel` and `accel` are the IMU's readings
+// as handed to the filter; `ori` and `lin_accel` are its outputs. "gate" is Y
+// when |a| is within FILTER_GRAV_THRESH of g, i.e. when the filter is blending
+// the accel tilt in this sample, and N when it is integrating the gyro alone.
+static void print_playground_cells(PlaygroundView view, const vec<float> &ori,
+                                   const vec<float> &angvel, const vec<float> &lin_accel,
+                                   const vec<float> &accel, float loop_dt_ms) {
     const bool ang = view != PlaygroundView::accel;
     const bool acc = view != PlaygroundView::angle;
     const float a_mag = magnitude(accel);
@@ -2356,7 +2414,15 @@ static void print_playground_row(PlaygroundView view, const vec<float> &ori,
                (double)accel.x, (double)accel.y, (double)accel.z, (double)a_mag);
     }
     if (ang) printf("%4s | ", fabsf(a_mag - gravity) < FILTER_GRAV_THRESH ? "Y" : "N");
-    printf("%5.2f\n", (double)loop_dt_ms);
+    printf("%5.2f", (double)loop_dt_ms);
+}
+
+// EFFECTS: Prints one full line for `view`; see print_playground_cells.
+static void print_playground_row(PlaygroundView view, const vec<float> &ori,
+                                 const vec<float> &angvel, const vec<float> &lin_accel,
+                                 const vec<float> &accel, float loop_dt_ms) {
+    print_playground_cells(view, ori, angvel, lin_accel, accel, loop_dt_ms);
+    printf("\n");
 }
 
 // A sandbox for exercising the IMU and the complementary filter by hand, not
@@ -2392,9 +2458,9 @@ static void imu_filter_playground() {
 
     // The first filter_IMU_data call measures a gap since boot, which
     // update_alpha_dt() treats as a stall (> 1 s) and turns into dt = 0.
-    Filter filter(FILTER_TAU, ideal_dt, FILTER_GRAV_THRESH);
+    Filter filter(ideal_dt, FILTER_GRAV_THRESH);
     printf("\n    Filter: tau %.2f s, gravity threshold %.2f m/s^2, printing every %d ms\n",
-           (double)FILTER_TAU, (double)FILTER_GRAV_THRESH,
+           4.26f, (double)FILTER_GRAV_THRESH,
            FILTER_PRINT_EVERY * control_period_ms);
     printf("    Running -- o / a / b switch view, q or Esc returns to the menu.\n");
     print_playground_header(view);
@@ -2436,6 +2502,216 @@ static void imu_filter_playground() {
     }
 
     printf("\n    Stopped.\n");
+}
+
+
+//////////////////// IMU STATIC TEST ////////////////////
+
+// EFFECTS: Prints the extra columns the static test appends to the angle
+// view: names (units == false) or units (units == true).
+static void print_tracking_header_cells(bool units) {
+    if (!units) printf(" | %7s %7s | %7s %7s | %6s | %-11s",
+                       "avg aR", "avg aP", "d roll", "d pitch", "t", "status");
+    else        printf(" | %7s %7s | %7s %7s | %6s | %-11s",
+                       "(deg)", "(deg)", "(deg)", "(deg)", "(s)", "");
+}
+
+// EFFECTS: Prints the failure line for one axis of the static test: what the
+// averaged accelerometer (gravity) tilt read, what the filter output read,
+// and how far apart they were at the sample that first broke
+// ANGULAR_ERROR_BOUND.
+static void print_static_failure(const char *axis, float t_s, float gravity_deg,
+                                 float fused_deg, float diff_deg) {
+    printf("    *** TEST FAILED at t = %.2f s on %s: gravity %s (%d ms avg) %+.2f deg vs "
+           "fused (gyro) %s %+.2f deg, difference %+.2f deg exceeds +/-%.2f deg"
+           " -- continuing to log ***\n",
+           (double)t_s, axis, axis, ACCEL_TILT_AVG_SAMPLES * control_period_ms,
+           (double)gravity_deg, axis, (double)fused_deg,
+           (double)diff_deg, (double)ANGULAR_ERROR_BOUND);
+}
+
+// EFFECTS: Prints the angle-view header with the tracking columns appended.
+static void print_tracking_header() {
+    printf("\n");
+    print_playground_header_cells(PlaygroundView::angle, false);
+    print_tracking_header_cells(false);
+    printf("\n");
+    print_playground_header_cells(PlaygroundView::angle, true);
+    print_tracking_header_cells(true);
+    printf("\n");
+}
+
+// STATIC TEST: with the IMU held still and level for the whole run, checks
+// that the fused roll and pitch track the accelerometer's own roll and pitch.
+// The point is to establish that the IMU and filter work statically before
+// trusting them in motion. Starts exactly like the playground (level, still,
+// calibrate), then runs the filter for TRACKING_TEST_MS, printing the
+// playground's 'o' view at the same rate plus the averaged accel tilt and
+// fused-minus-averaged-accel roll and pitch. The accel tilt is averaged over
+// ACCEL_TILT_AVG_SAMPLES because a single sample's noise alone exceeds the
+// bound -- see ACCEL_TILT_AVG_MS for the reasoning. The check starts once the
+// window is full (the first ACCEL_TILT_AVG_MS shows "warm-up").
+//
+// Every sample after warm-up, not just the printed ones, is checked against
+// ANGULAR_ERROR_BOUND; the first miss prints TEST FAILED and every later line
+// says so too, but the run continues to the end so the whole run is logged.
+//
+// The verdict is automatic: FAIL if the bound was ever exceeded, PASS if the
+// full run held it. A run stopped early without a miss proves nothing either
+// way, so it leaves the stored verdict as it was.
+static void test_imu_static() {
+    printf("\n--- STATIC TEST (%d s) ---\n", TRACKING_TEST_MS / 1000);
+    printf("The IMU must be kept STILL and LEVEL for the ENTIRE test.\n");
+    printf("Desired behavior: for the whole run, fused roll and pitch stay\n"
+           "within %.2f deg of the accelerometer-only roll and pitch, averaged\n"
+           "over the last %d ms (one sample's noise alone exceeds the bound).\n",
+           (double)ANGULAR_ERROR_BOUND, ACCEL_TILT_AVG_SAMPLES * control_period_ms);
+    printf("Calibrates the IMU, then samples it every %d ms (control_frequency\n"
+           "%.2f Hz) for %d s. Press q at any time to stop early.\n",
+           control_period_ms, (double)control_frequency, TRACKING_TEST_MS / 1000);
+
+    IMU &imu = imu_instance();
+    // The ctor-zeroed state (test 1) is no longer observable after this.
+    imu_dirtied = true;
+
+    // Holds the orientation the filter writes. Nothing is commanded.
+    SpotModel TPUP;
+
+    wait_for_enter("Hold the IMU LEVEL and STILL");
+
+    imu.reset_calibration();
+    imu.calibrate();
+    printf("    Calibration complete.\n");
+
+    if (wait_for_enter_or_quit("The test will start soon -- keep the IMU STILL and LEVEL until it ends")) {
+        printf("\n    Stopped before the test started.\n");
+        return;
+    }
+
+    // Constructed only now, after the prompt, so the time spent at it is
+    // not measured as the first sample's dt.
+    Filter filter(ideal_dt, FILTER_GRAV_THRESH);
+    printf("\n    Filter: tau %.2f s, gravity threshold %.2f m/s^2, printing every %d ms\n",
+           4.26f, (double)FILTER_GRAV_THRESH,
+           FILTER_PRINT_EVERY * control_period_ms);
+    printf("    Keep the IMU STILL and LEVEL. Bound: |d roll| and |d pitch| <= %.2f deg.\n"
+           "    q stops the test.\n",
+           (double)ANGULAR_ERROR_BOUND);
+    print_tracking_header();
+
+    bool  roll_failed = false, pitch_failed = false;
+    bool  quit   = false;
+    float max_d_roll = 0.0f, max_d_pitch = 0.0f;
+    float elapsed_s = 0.0f;
+
+    // Ring buffer of the last ACCEL_TILT_AVG_SAMPLES accel tilts. Summed fresh
+    // each sample rather than kept as a running sum, so float error cannot
+    // accumulate over the ~10000 samples of a full run.
+    float roll_hist[ACCEL_TILT_AVG_SAMPLES]  = {};
+    float pitch_hist[ACCEL_TILT_AVG_SAMPLES] = {};
+    int   hist_count = 0;
+
+    TickType_t last_wake = xTaskGetTickCount();
+    const int64_t start_us = esp_timer_get_time();
+    int64_t prev_us = start_us;
+    for (int i = 0; ; ++i) {
+        // Non-blocking, as in the playground: a blocking read would stretch
+        // the loop period.
+        const int c = fgetc(stdin);
+        if (c == EOF) clearerr(stdin);
+        else if (c == 'q' || c == 'Q' || c == 0x1B) { quit = true; break; }
+
+        const int64_t now_us = esp_timer_get_time();
+        if (now_us - start_us >= (int64_t)TRACKING_TEST_MS * 1000) break;
+
+        imu.update();
+        const vec<float> angvel = imu.get_angvel();   // dps, calibrated
+        const vec<float> accel  = imu.get_accel();    // m/s^2, calibrated
+
+        const vec<float> lin_accel = filter.filter_IMU_data(&TPUP, angvel, accel);
+        const vec<float> ori = TPUP.get_orientation();
+
+        float a_roll, a_pitch;
+        accel_tilt(accel, &a_roll, &a_pitch);
+        roll_hist[i % ACCEL_TILT_AVG_SAMPLES]  = a_roll;
+        pitch_hist[i % ACCEL_TILT_AVG_SAMPLES] = a_pitch;
+        if (hist_count < ACCEL_TILT_AVG_SAMPLES) ++hist_count;
+
+        float roll_sum = 0.0f, pitch_sum = 0.0f;
+        for (int k = 0; k < hist_count; ++k) {
+            roll_sum  += roll_hist[k];
+            pitch_sum += pitch_hist[k];
+        }
+        const float avg_a_roll  = roll_sum  / hist_count;
+        const float avg_a_pitch = pitch_sum / hist_count;
+
+        const float d_roll  = ori.x - avg_a_roll;
+        const float d_pitch = ori.y - avg_a_pitch;
+
+        const float loop_dt_ms = (now_us - prev_us) / 1000.0f;
+        prev_us = now_us;
+        elapsed_s = (now_us - start_us) / 1e6f;
+
+        // Not judged until the window is full: a partial average is closer to
+        // a single noisy sample, which is exactly what the averaging is for.
+        const bool warming_up = hist_count < ACCEL_TILT_AVG_SAMPLES;
+        if (!warming_up) {
+            if (fabsf(d_roll)  > max_d_roll)  max_d_roll  = fabsf(d_roll);
+            if (fabsf(d_pitch) > max_d_pitch) max_d_pitch = fabsf(d_pitch);
+
+            // Reported once per axis, the first time that axis goes out, so a
+            // roll failure does not hide a later pitch failure.
+            if (!roll_failed && fabsf(d_roll) > ANGULAR_ERROR_BOUND) {
+                roll_failed = true;
+                print_static_failure("roll", elapsed_s, avg_a_roll, ori.x, d_roll);
+            }
+            if (!pitch_failed && fabsf(d_pitch) > ANGULAR_ERROR_BOUND) {
+                pitch_failed = true;
+                print_static_failure("pitch", elapsed_s, avg_a_pitch, ori.y, d_pitch);
+            }
+        }
+        const bool failed = roll_failed || pitch_failed;
+
+        if (i % FILTER_PRINT_EVERY == 0) {
+            print_playground_cells(PlaygroundView::angle, ori, angvel, lin_accel,
+                                   accel, loop_dt_ms);
+            printf(" | %7.2f %7.2f | %7.2f %7.2f | %6.1f | %-11s\n",
+                   (double)avg_a_roll, (double)avg_a_pitch,
+                   (double)d_roll, (double)d_pitch, (double)elapsed_s,
+                   failed ? "TEST FAILED" : warming_up ? "warm-up" : "ok");
+        }
+
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(control_period_ms));
+    }
+
+    printf("\n    %s after %.1f s of %d s.\n",
+           quit ? "Stopped early by q" : "Finished", (double)elapsed_s,
+           TRACKING_TEST_MS / 1000);
+    printf("    Max |d roll| %.2f deg, max |d pitch| %.2f deg (bound %.2f deg).\n",
+           (double)max_d_roll, (double)max_d_pitch, (double)ANGULAR_ERROR_BOUND);
+    const bool failed = roll_failed || pitch_failed;
+    if (failed)    printf("    RESULT: TEST FAILED on %s\n",
+                          roll_failed && pitch_failed ? "ROLL and PITCH"
+                          : roll_failed ? "ROLL" : "PITCH");
+    else if (quit) printf("    RESULT: INCOMPLETE -- bound held, but the run was cut short\n");
+    else           printf("    RESULT: TEST PASSED\n");
+
+    TestRecord &rec = records[9];
+    if (!failed && quit) {
+        printf("    No verdict recorded; the stored result is still %s.\n",
+               result_str(rec.result));
+        return;
+    }
+
+    rec.result = failed ? Result::fail : Result::pass;
+    printf("\n    Recorded %s for \"%s\".\n", result_str(rec.result), rec.name);
+    printf("    Note (optional, blank to record the max errors): ");
+    read_line(rec.note, sizeof rec.note);
+    if (rec.note[0] == '\0') {
+        snprintf(rec.note, sizeof rec.note, "max |d roll| %.2f, |d pitch| %.2f deg, %.0f s",
+                 (double)max_d_roll, (double)max_d_pitch, (double)elapsed_s);
+    }
+    save_results();
 }
 
 
@@ -2689,6 +2965,7 @@ void run_test_session() {
             case 6: test_move_to_pwm_skipped();    break;
             case 7: test_spotservo_limits();       break;
             case 8: test_spotservo_protractor();   break;
+            case 9: test_imu_static();             break;
         }
     }
 

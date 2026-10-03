@@ -54,7 +54,7 @@ float distance_between(const vec<float> &lhs, const vec<float> &rhs) {
 }
 
 float magnitude(const vec<float> &my_vec) {
-    return (float) (my_vec.x * my_vec.x + my_vec.y * my_vec.y + my_vec.z * my_vec.z);
+    return (float) sqrt((float) (my_vec.x * my_vec.x + my_vec.y * my_vec.y + my_vec.z * my_vec.z));
 }
 
 // Operator Overloads //

@@ -9,8 +9,8 @@
 
 using namespace std;
 
-Filter::Filter(const float &T, const float &del_t, const float &threshold) 
-    : Tau(T), alpha(0.0f), dt(del_t), grav_threshold(threshold),
+Filter::Filter(const float &del_t, const float &threshold) 
+    : alpha(0.0f), dt(del_t), grav_threshold(threshold),
       prev_time_stamp(0.0f), curr_time_stamp(0.0f) {
     if (Tau > 0.0f) {
         alpha = exp(-dt / Tau);

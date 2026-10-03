@@ -8,7 +8,7 @@
 
 class Filter {
     private:
-        const float Tau;
+        const float Tau = 4.26;
         float alpha;
         float dt;              // in seconds
         float grav_threshold;
@@ -20,7 +20,7 @@ class Filter {
         void update_alpha_dt();
         
     public:
-        Filter(const float &T, const float &del_t, const float &grav_threshold);
+        Filter(const float &del_t, const float &grav_threshold);
 
         // Updates orientation in TPUP and returns acceleration as a vec<Float>
         vec<float> filter_IMU_data(SpotModel * TPUP, const vec<float> angvel, const vec<float> accel);
