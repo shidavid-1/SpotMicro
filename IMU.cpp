@@ -79,7 +79,31 @@ void IMU::calibrate() {
     accel_zero.x = accel_avg.x;
     accel_zero.y = accel_avg.y;
     accel_zero.z = accel_avg.z - gravity;
-        
+
+    // Compute bias
+    angvel_sum = {0, 0, 0};
+    accel_sum = {0, 0, 0};
+
+    for (uint32_t i = 0; i < loop_iterations; ++i) {
+        update();
+        angvel_sum = angvel_sum + angvel;
+        accel_sum = accel_sum + accel;
+    }
+    
+    angvel_avg.x = angvel_sum.x / loop_iterations;
+    angvel_avg.y = angvel_sum.y / loop_iterations;
+    angvel_avg.z = angvel_sum.z / loop_iterations;
+    accel_avg.x = accel_sum.x / loop_iterations;
+    accel_avg.y = accel_sum.y / loop_iterations;
+    accel_avg.z = accel_sum.z / loop_iterations;
+
+    // Print biases
+    ESP_LOGI("BIASES", "angvel x bias: %f", angvel_avg.x);
+    ESP_LOGI("BIASES", "angvel y bias: %f", angvel_avg.y);
+    ESP_LOGI("BIASES", "angvel z bias: %f", angvel_avg.z);
+    ESP_LOGI("BIASES", "accel x bias: %f", accel_avg.x);
+    ESP_LOGI("BIASES", "accel y bias: %f", accel_avg.y);
+    ESP_LOGI("BIASES", "accel z bias: %f", accel_avg.z);
 }
 
 void IMU::reset_calibration() {
