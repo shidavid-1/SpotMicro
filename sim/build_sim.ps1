@@ -1,9 +1,9 @@
 # Host simulation build -- NOT the firmware build.
 #
-# Compiles the root main.cpp control loop against the shim headers in sim/
-# (esp_log.h, driver/i2c.h, freertos/*) so the gait/transform math can be run
-# and inspected on a PC. The firmware entry point is main/main.cpp, which is
-# built by ESP-IDF/PlatformIO and is unaffected by this script.
+# Compiles the main/walk_main.cpp control loop against the shim headers in
+# sim/ (esp_log.h, driver/i2c.h, freertos/*) so the gait/transform math can be
+# run and inspected on a PC. The test-session entry point, main/test_main.cpp,
+# is built only by ESP-IDF/PlatformIO and is unaffected by this script.
 #
 #   .\sim\build_sim.ps1           # build sim\tpup_sim.exe
 #   .\sim\build_sim.ps1 -Run      # build, then run it
@@ -30,23 +30,24 @@ $Output  = Join-Path $SimDir 'tpup_sim.exe'
 #   Filter.cpp                       does not compile yet (its two static
 #                                    helpers are called above their
 #                                    definitions, so they are not in scope at
-#                                    the call site). main.cpp includes
+#                                    the call site). walk_main.cpp includes
 #                                    Filter.hpp but calls nothing from it, so
 #                                    it is left out until that is fixed.
-$Sources = @(
-    'main.cpp'
-    'Board.cpp'
-    'Common.cpp'
-    'Gait_Controller.cpp'
-    'IK.cpp'
-    'IMU.cpp'
-    'Servo.cpp'
-    'Spot_Model.cpp'
-    'Transformer.cpp'
-    'TrapezoidPath.cpp'
-) | ForEach-Object { Join-Path $RootDir $_ }
+$TpupDir = Join-Path $RootDir 'components\tpup'
+$Sources = @(Join-Path $RootDir 'main\walk_main.cpp')
+$Sources += @(
+    'hardware\Board.cpp'
+    'core\Common.cpp'
+    'gait\Gait_Controller.cpp'
+    'kinematics\IK.cpp'
+    'hardware\IMU.cpp'
+    'hardware\Servo.cpp'
+    'kinematics\Spot_Model.cpp'
+    'kinematics\Transformer.cpp'
+    'gait\TrapezoidPath.cpp'
+) | ForEach-Object { Join-Path $TpupDir $_ }
 
-# main.cpp defines app_main(), the signature ESP-IDF calls. A PC executable
+# walk_main.cpp defines app_main(), the signature ESP-IDF calls. A PC executable
 # needs main(), so this shim supplies one and calls straight through.
 $Sources += (Join-Path $SimDir 'sim_main.cpp')
 
@@ -63,15 +64,17 @@ if (-not $Compiler) {
 # gnu++23 matches what ESP-IDF builds the firmware with. It is not optional:
 # Spot_Model.cpp uses aggregate class template argument deduction ('vec pos =
 # {...}'), which is C++20, and M_PI is only visible outside strict-ANSI mode.
-# TPUP_CONTROL_LOOP picks the control-loop app_main in main.cpp. Without it
+# TPUP_CONTROL_LOOP picks the control-loop app_main in walk_main.cpp. Without it
 # that function is preprocessed away and the link fails on a missing app_main.
 $Flags = @('-std=gnu++23', '-Wall', '-Wextra', '-DTPUP_CONTROL_LOOP')
 if ($DebugBuild) { $Flags += @('-g', '-O0') } else { $Flags += '-O2' }
 if ($RealTime) { $Flags += '-DSIM_REAL_TIME_DELAYS' }
 
-# sim/ comes second so the shim headers are only picked up for includes the
-# repo root does not satisfy itself.
-$Includes = @("-I$RootDir", "-I$SimDir")
+# sim/ comes last so the shim headers are only picked up for includes the
+# tpup folders do not satisfy themselves.
+$Includes = @('core', 'hardware', 'kinematics', 'gait', 'estimation') |
+    ForEach-Object { "-I$(Join-Path $TpupDir $_)" }
+$Includes += "-I$SimDir"
 
 Write-Host "Building $Output"
 & $Compiler @Flags @Includes @Sources '-o' $Output

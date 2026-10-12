@@ -8,7 +8,7 @@
     "tasks": [
         {
             "label": "Walk: Upload & Monitor",
-            "detail": "Build the gait control loop (root main.cpp), flash it, open the serial monitor.",
+            "detail": "Build the gait control loop (main/walk_main.cpp), flash it, open the serial monitor.",
             "type": "shell",
             "command": "${env:USERPROFILE}/.platformio/penv/Scripts/pio.exe",
             "args": ["run", "-e", "walk", "-t", "upload", "-t", "monitor"],
@@ -18,7 +18,7 @@
         },
         {
             "label": "Test: Upload & Monitor",
-            "detail": "Build the hardware test session (main/main.cpp), flash it, open the serial monitor.",
+            "detail": "Build the hardware test session (main/test_main.cpp), flash it, open the serial monitor.",
             "type": "shell",
             "command": "${env:USERPROFILE}/.platformio/penv/Scripts/pio.exe",
             "args": ["run", "-e", "test", "-t", "upload", "-t", "monitor"],
@@ -58,7 +58,7 @@
             "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
         },
         {
-            // Host simulation build: compiles the root main.cpp control loop
+            // Host simulation build: compiles the main/walk_main.cpp control loop
             // against the shim headers in sim/. Separate from the PlatformIO /
             // ESP-IDF firmware build above; it has no test-session counterpart
             // because the test session drives real hardware (I2C, servos).

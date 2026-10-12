@@ -24,13 +24,19 @@ The I2C bus runs on SDA = GPIO 11, SCL = GPIO 12.
 
 ## Code map
 
-| Module | Files |
+| Folder | Contents |
 |---|---|
-| Gait | `Gait_Controller`, `TrapezoidPath` |
-| Kinematics | `IK`, `Transformer`, `Spot_Model` |
-| Hardware | `Servo`, `IMU`, `Common` (I2C setup and shared types) |
-| Estimation | `Filter`, `State_Solver` (planned) |
-| Testing | `Test_Session`, `Self_Test` |
+| [`main/`](main/) | Entry points: `walk_main.cpp` (control loop), `test_main.cpp` (test session) |
+| [`components/tpup/core/`](components/tpup/core/) | `Common`: shared math types and robot constants |
+| [`components/tpup/hardware/`](components/tpup/hardware/) | `Board` (I2C setup, pins, addresses), `Servo`, `IMU` |
+| [`components/tpup/kinematics/`](components/tpup/kinematics/) | `IK`, `Spot_Model`, `Transformer` |
+| [`components/tpup/gait/`](components/tpup/gait/) | `Gait_Controller`, `TrapezoidPath` |
+| [`components/tpup/estimation/`](components/tpup/estimation/) | `Filter`, `State_Solver` (planned) |
+| [`components/tpup_test/`](components/tpup_test/) | `Test_Session`, `Self_Test` |
+| [`sim/`](sim/) | Host simulation build and shim headers |
+| [`docs/`](docs/) | IK audit and hardware test logs |
+
+Each folder under `components/tpup/` only depends on the folders above it in this table.
 
 Data flow: `GaitController → Transformer → IK → SpotModel → Servos`, with `IMU → Filter` feeding orientation back into `SpotModel`.
 
@@ -39,8 +45,8 @@ Data flow: `GaitController → Transformer → IK → SpotModel → Servos`, wit
 The build uses PlatformIO and has two environments. Both compile from the same tree, and a build flag picks the entry point:
 
 ```sh
-pio run -e walk -t upload -t monitor   # gait control loop (main.cpp)
-pio run -e test -t upload -t monitor   # interactive hardware test session (main/main.cpp)
+pio run -e walk -t upload -t monitor   # gait control loop (main/walk_main.cpp)
+pio run -e test -t upload -t monitor   # interactive hardware test session (main/test_main.cpp)
 ```
 
 VS Code tasks for both environments are in `.vscode/tasks.json` (Ctrl+Shift+B).
@@ -56,8 +62,8 @@ VS Code tasks for both environments are in `.vscode/tasks.json` (Ctrl+Shift+B).
 ## Testing
 
 - **Self tests:** pure-math checks of IK, Transformer and TrapezoidPath that run on boot.
-- **Hardware test session:** an interactive serial walkthrough covering the IMU (configuration, saturation, calibration, six-face orientation) and the servos (sweeps, limit saturation, protractor-verified angles). Results are saved to NVS across reboots and logged in [`test_results.md`](test_results.md).
-- **IK audit:** [`REVIEW_NOTES.md`](REVIEW_NOTES.md) is a write-up of four branch-condition bugs found in the IK and the sweep-testing strategy that caught them.
+- **Hardware test session:** an interactive serial walkthrough covering the IMU (configuration, saturation, calibration, six-face orientation) and the servos (sweeps, limit saturation, protractor-verified angles). Results are saved to NVS across reboots and logged in [`docs/test_results.md`](docs/test_results.md).
+- **IK audit:** [`docs/REVIEW_NOTES.md`](docs/REVIEW_NOTES.md) is a write-up of four branch-condition bugs found in the IK and the sweep-testing strategy that caught them.
 
 ## Status
 

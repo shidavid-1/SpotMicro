@@ -10,7 +10,7 @@
 #include "Board.hpp"
 
 // Selected by TPUP_CONTROL_LOOP (see platformio.ini). The other app_main
-// lives in main/main.cpp and runs the hardware test session; exactly one of
+// lives in test_main.cpp and runs the hardware test session; exactly one of
 // the two is compiled in, since two definitions would not link.
 #ifdef TPUP_CONTROL_LOOP
 
