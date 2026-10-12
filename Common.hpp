@@ -7,7 +7,6 @@
 #ifndef UNIVERSAL_CONSTANTS_STRUCTS_HPP
 #define UNIVERSAL_CONSTANTS_STRUCTS_HPP
 
-#include "driver/i2c.h"
 #include "esp_log.h"
 #include <cstdlib>
 #include <utility>
@@ -17,11 +16,6 @@ constexpr float control_frequency = 83.33333333333333333333333333333f; // Hz
 constexpr float ideal_dt = 1.0f/control_frequency; // in s
 // Control loop period, rounded to whole ms for vTaskDelayUntil.
 constexpr int control_period_ms = (int)(ideal_dt * 1000.0f + 0.5f);
-constexpr gpio_num_t sda_pin = GPIO_NUM_11;
-constexpr gpio_num_t scl_pin = GPIO_NUM_12;
-constexpr i2c_port_t i2c_port = I2C_NUM_0;
-constexpr uint8_t IMU_ADDR = 0x68;
-constexpr uint8_t PCA_ADDR = 0x40;
 
 // This is defined to be the magnitude of the x and y coordinates of the
 // tip of the foot relative to the origin *of a particular leg*
@@ -83,17 +77,6 @@ constexpr legQuad<vec<float>> global_leg_origins
 #define TPUP_CHECK(cond, tag)                                                      do {                                                                               if (!(cond)) {                                                                     ESP_LOGE((tag), "Check failed: %s (%s:%d)",                                             #cond, __FILE__, __LINE__);                                           abort();                                                                   }                                                                          } while (0)
 
 // Functions //
-
-// REQUIRES: i2c bus is properly wired
-// EFFECTS: Configures and prepares
-// i2c bus using global "i2c_port"
-void init_i2c();
-
-// REQUIRES: port is 1 or 0, addr, reg, and data are valid
-// EFFECTS: Constructs, executes, and deletes a list at ptr that
-// writes register reg of device with address addr to be data.
-// This executes at I2C controller port.
-esp_err_t write_to_reg(uint8_t addr, uint8_t reg, uint8_t data);
 
 float distance_between(const vec<float> &lhs, const vec<float> &rhs);
 

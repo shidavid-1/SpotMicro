@@ -33,6 +33,7 @@ idf_component_register(
         "../Test_Session.cpp"
         "../Self_Test.cpp"
         "../Common.cpp"
+        "../Board.cpp"
         "../IMU.cpp"
         "../Servo.cpp"
         "../IK.cpp"

@@ -1,5 +1,6 @@
 #include "Servo.hpp"
 #include "Common.hpp"
+#include "Board.hpp"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"

@@ -7,6 +7,7 @@
 #include "Gait_Controller.hpp"
 #include "Filter.hpp"
 #include "Common.hpp"
+#include "Board.hpp"
 
 // Selected by TPUP_CONTROL_LOOP (see platformio.ini). The other app_main
 // lives in main/main.cpp and runs the hardware test session; exactly one of

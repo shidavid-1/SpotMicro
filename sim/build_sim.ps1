@@ -35,6 +35,7 @@ $Output  = Join-Path $SimDir 'tpup_sim.exe'
 #                                    it is left out until that is fixed.
 $Sources = @(
     'main.cpp'
+    'Board.cpp'
     'Common.cpp'
     'Gait_Controller.cpp'
     'IK.cpp'

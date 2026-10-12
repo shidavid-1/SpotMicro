@@ -2,8 +2,6 @@
 
 Firmware for a 12-servo SpotMicro-style quadruped robot, written in C++ on an ESP32-S3 (ESP-IDF + FreeRTOS).
 
-<!-- TODO: add a photo or GIF of the robot walking here -->
-
 ## What it does
 
 - **Gait generation:** a trot gait built from trapezoidal foot paths, with a parametrized body height, step height, stride length, speed and duty factor.

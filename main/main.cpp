@@ -5,6 +5,7 @@
 */
 
 #include "Common.hpp"
+#include "Board.hpp"
 #include "Test_Session.hpp"
 
 #ifndef TPUP_CONTROL_LOOP

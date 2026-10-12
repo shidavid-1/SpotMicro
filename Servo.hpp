@@ -5,6 +5,7 @@
 // and per-joint angle limits.
 
 #include "Common.hpp"     // triplet<T>, i2c_port, PCA_ADDR
+#include "Board.hpp"
 #include "driver/i2c.h"   // i2c_port_t
 #include <cmath>          // std::ceil (for pre_scale)
 #include <cstdint>

@@ -1,6 +1,7 @@
 #include "Test_Session.hpp"
 #include "Self_Test.hpp"
 #include "Common.hpp"
+#include "Board.hpp"
 #include "IMU.hpp"
 #include "Servo.hpp"
 #include "Spot_Model.hpp"
