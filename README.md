@@ -63,7 +63,6 @@ VS Code tasks for both environments are in `.vscode/tasks.json` (Ctrl+Shift+B).
 
 - **Self tests:** pure-math checks of IK, Transformer and TrapezoidPath that run on boot.
 - **Hardware test session:** an interactive serial walkthrough covering the IMU (configuration, saturation, calibration, six-face orientation) and the servos (sweeps, limit saturation, protractor-verified angles). Results are saved to NVS across reboots and logged in [`docs/test_results.md`](docs/test_results.md).
-- **IK audit:** [`docs/REVIEW_NOTES.md`](docs/REVIEW_NOTES.md) is a write-up of four branch-condition bugs found in the IK and the sweep-testing strategy that caught them.
 
 ## Status
 
